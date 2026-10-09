@@ -62,3 +62,68 @@ body{background:radial-gradient(ellipse at 88% 0%,#34205850,transparent 45%),rad
 .video-delete-button{color:#ff9d9d!important}.video-library-card [data-job-actions]{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 
 .video-library-card [data-job-project]{margin-top:18px}.video-library-card [data-job-project] label{display:block;margin-bottom:8px;font-size:11px}
+
+/* Appearance control and a bright counterpart to the studio's night palette. */
+.topbar-actions{display:flex;align-items:center;gap:12px}
+.theme-toggle{display:inline-flex;align-items:center;gap:7px;min-height:34px;padding:7px 11px;border:1px solid var(--line);border-radius:20px;background:var(--white);color:var(--ink);font-size:11px;white-space:nowrap}
+.theme-toggle:hover{border-color:var(--orange)}
+#theme-icon{font-size:17px;line-height:1}
+@media screen{
+:root[data-theme=light]{color-scheme:light;--paper:#edf3f8;--white:#ffffff;--ink:#172b43;--muted:#536980;--line:#c9d6e4;--orange:#087b8b;--orange-soft:#dff3f5;--dark:#e4edf5;--green:#197453;--card:#fff;--border:#c9d6e4;background:var(--paper)}
+:root[data-theme=light] body{background:radial-gradient(ellipse at 88% 0%,#ddd8f755,transparent 45%),radial-gradient(ellipse at 35% 55%,#bcecef44,transparent 45%),var(--paper)}
+:root[data-theme=light] body:before{background-image:linear-gradient(#5074980a 1px,transparent 1px),linear-gradient(90deg,#5074980a 1px,transparent 1px)}
+:root[data-theme=light] .sidebar{background:linear-gradient(180deg,#f6faff,#e4edf5);border-color:var(--line)}
+:root[data-theme=light] .nav-button{color:#455f79}
+:root[data-theme=light] .nav-button.active{background:linear-gradient(90deg,#d5f1f3,#e0eafa);color:#126474;box-shadow:inset 2px 0 var(--orange)}
+:root[data-theme=light] .nav-button:hover{background:#dce9f3}
+:root[data-theme=light] .brand-sub,:root[data-theme=light] .sidebar-label,:root[data-theme=light] .sidebar-note p,:root[data-theme=light] .sidebar-footer{color:#526d85}
+:root[data-theme=light] .sidebar-note h3,:root[data-theme=light] .topbar strong{color:var(--ink)}
+:root[data-theme=light] .nav-icon,:root[data-theme=light] .eyebrow,:root[data-theme=light] .text-button,:root[data-theme=light] .project-label{color:var(--orange)}
+:root[data-theme=light] .count{background:#e4eff7;border-color:#bacddb;color:#385770}
+:root[data-theme=light] .topbar{background:#f6faffdd}
+:root[data-theme=light] .engine-pill{background:#eef6fb;border-color:#bfd5df;color:#456579}
+:root[data-theme=light] .engine-pill.ready{color:#146c50}
+:root[data-theme=light] h1 em{background:linear-gradient(110deg,#087b8b,#6050ad);background-clip:text;-webkit-background-clip:text}
+:root[data-theme=light] .heading-stamp{background:radial-gradient(circle,#e3f4fb,#f9fcff 65%);color:#28536d;border-color:#a5cbd8;box-shadow:0 0 35px #78afcf20}
+:root[data-theme=light] .heading-stamp div{color:#526d85;border-color:#b3cadb}
+:root[data-theme=light] .composer,:root[data-theme=light] .listening-panel,:root[data-theme=light] .recent-panel,:root[data-theme=light] .settings-card,:root[data-theme=light] .song-card,:root[data-theme=light] .lyric-chat,:root[data-theme=light] .lyric-editor,:root[data-theme=light] .lyric-sidebar,:root[data-theme=light] .lyric-connection,:root[data-theme=light] .lyric-partner-bar,:root[data-theme=light] .score-panel,:root[data-theme=light] .recording-card,:root[data-theme=light] .project-card,:root[data-theme=light] .video-reference-card,:root[data-theme=light] .video-library-card{background:linear-gradient(135deg,#fff,#f7fbff);border-color:var(--line);box-shadow:0 10px 35px #294a6a08}
+:root[data-theme=light] input,:root[data-theme=light] textarea,:root[data-theme=light] select,:root[data-theme=light] select option,:root[data-theme=light] .lyrics-field textarea,:root[data-theme=light] .sheet-sidebar input[type=file]{background:#fff;color:var(--ink);border-color:var(--line)}
+:root[data-theme=light] input::placeholder,:root[data-theme=light] textarea::placeholder{color:#60758b}
+:root[data-theme=light] input:focus,:root[data-theme=light] textarea:focus,:root[data-theme=light] select:focus{border-color:var(--orange);box-shadow:0 0 0 3px #087b8b18}
+:root[data-theme=light] .panel-title,:root[data-theme=light] .video-reference-card label{color:#334e68}
+:root[data-theme=light] .save-status,:root[data-theme=light] .label-line>span,:root[data-theme=light] .lyrics-footer,:root[data-theme=light] .lyrics-toolbar>span,:root[data-theme=light] .room-meta,:root[data-theme=light] .session-info small,:root[data-theme=light] .song-card time,:root[data-theme=light] .tip p,:root[data-theme=light] .workspace-footer,:root[data-theme=light] .song-select{color:var(--muted)}
+:root[data-theme=light] .step,:root[data-theme=light] .lyrics-toolbar,:root[data-theme=light] .lyrics-footer{background:#eef5fb;border-color:var(--line)}
+:root[data-theme=light] .step{color:var(--orange)}
+:root[data-theme=light] .lyrics-toolbar button,:root[data-theme=light] .presets button,:root[data-theme=light] .secondary{background:#f2f7fc;border-color:#c5d5e4;color:#35556d}
+:root[data-theme=light] .presets button:hover,:root[data-theme=light] .lyrics-toolbar button:hover,:root[data-theme=light] .secondary:hover{background:#def1f4;border-color:#7cb8c4;color:#125d6b}
+:root[data-theme=light] .mode-card,:root[data-theme=light] .engine-toggle-options{background:#f4f8fc;border-color:var(--line)}
+:root[data-theme=light] .mode-card:has(input:checked),:root[data-theme=light] .engine-toggle-options input:checked+span{background:#dff3f5;border-color:var(--orange);color:#125d6b;box-shadow:none}
+:root[data-theme=light] .engine-toggle-options span{color:#526c83}
+:root[data-theme=light] .composition-utilities,:root[data-theme=light] .session-row,:root[data-theme=light] .workspace-footer{border-color:var(--line)}
+:root[data-theme=light] .compact-score-options .score-options[open],:root[data-theme=light] .composition-score-field,:root[data-theme=light] .video-plan{background:#eef7fb;border-color:#b0ced9}
+:root[data-theme=light] .session-art,:root[data-theme=light] .card-art,:root[data-theme=light] .video-pending-thumbnail{background:linear-gradient(135deg,#daeff4,#e8e4fa);color:#116c7c}
+:root[data-theme=light] .card-art i,:root[data-theme=light] .mini-wave i{background:linear-gradient(#14909c,#7366bc)}
+:root[data-theme=light] .tip strong{color:#405f76}
+:root[data-theme=light] .empty-library{background:#f8fcff;border-color:#b0c8dc}
+:root[data-theme=light] .status-badge{background:#def3e8;color:#176746}
+:root[data-theme=light] .status-badge.running,:root[data-theme=light] .status-badge.queued{background:#dff1f6;color:#126373}
+:root[data-theme=light] .status-badge.failed,:root[data-theme=light] .status-badge.interrupted,:root[data-theme=light] .status-badge.cancelled{background:#f9e4e8;color:#963646}
+:root[data-theme=light] .error-message,:root[data-theme=light] .video-delete-button{color:#ad3549!important}
+:root[data-theme=light] .lyric-message{background:#edf3fa}
+:root[data-theme=light] .lyric-message.user,:root[data-theme=light] .lyric-session.active{background:#def1f4}
+:root[data-theme=light] .lyric-session{border-color:var(--line)}
+:root[data-theme=light] .lyric-session:hover{background:#eaf3fa}
+:root[data-theme=light] dialog{background:linear-gradient(135deg,#fff,#f1f7fd);border-color:#b4cbdc;box-shadow:0 15px 60px #183c5f30}
+:root[data-theme=light] dialog::backdrop{background:#18334b66}
+:root[data-theme=light] dialog pre,:root[data-theme=light] .score-panel pre{background:#eef4fa;border-color:var(--line);color:#334f68}
+:root[data-theme=light] #toast{background:#e0f3f5;color:#17586a;border-color:#99c7d1}
+:root[data-theme=light] .video-reference-card img{background:#eef4f9}
+:root[data-theme=light] .video-orbit{background:radial-gradient(circle,#c7edf2,#edf5fb 70%);border-color:#7bb6c5}
+:root[data-theme=light] .video-orbit span{color:#087b8b}
+:root[data-theme=light] audio{color-scheme:light;opacity:1}
+:root[data-theme=light] input[type=range],:root[data-theme=light] input[type=checkbox]{accent-color:var(--orange)}
+}
+@media(max-width:600px){.topbar{height:auto;min-height:71px;gap:12px;flex-wrap:wrap;padding-top:12px;padding-bottom:12px}.topbar-actions{gap:8px}.theme-toggle{font-size:10px}.topbar-actions .engine-pill{font-size:9px}}
+@media print{.topbar-actions{display:none}}
+
+.fal-balance{display:flex;align-items:center;flex-wrap:wrap;gap:14px;padding:16px;margin:16px 0;border:1px solid var(--line);border-radius:12px;background:var(--white)}.fal-balance[hidden]{display:none}.fal-balance>div{display:flex;flex:1;flex-direction:column;gap:5px}.fal-balance strong{font-size:24px;color:var(--orange)}.fal-balance p{flex-basis:100%;margin:0}.fal-balance p:empty{display:none}

@@ -41,6 +41,27 @@ export function renderVideoJobs(container,jobs,models,{gallery=false,projects=[]
 }
 export function setupVideos({ getStudio, api, refresh, toast, showPage }) {
   const $=id=>document.getElementById(id);let initialized=false,songSignature='',masterSignature='',jobSignature='',planned=null,savingTimer,busy=false;
+  let balanceLoading=false,balanceRequested=false,balanceError='',costSyncLoading=false;
+  function renderBalance(){
+    const configured=state()?.connection.billingConfigured,account=state()?.accountBilling;
+    for(const id of ['video-settings-balance','video-library-balance']){
+      const panel=$(id);panel.hidden=!configured;
+      panel.querySelector('[data-fal-balance-value]').textContent=account?new Intl.NumberFormat(undefined,{style:'currency',currency:account.currency}).format(account.balance):balanceLoading?'Checking…':'Not checked yet';
+      panel.querySelector('[data-fal-balance-time]').textContent=account?`Last checked ${new Date(account.checkedAt).toLocaleString()}`:'';
+      panel.querySelector('[data-fal-balance-refresh]').disabled=balanceLoading;
+      panel.querySelector('[data-fal-balance-error]').textContent=balanceError;
+    }
+    $('video-sync-costs').disabled=costSyncLoading||!configured;
+    $('video-sync-costs').title=configured?'Read actual video costs using your billing key':'Add an admin-scope billing key in Engine settings to sync costs';
+  }
+  async function refreshBalance(){
+    if(balanceLoading||!state()?.connection.billingConfigured)return;
+    balanceLoading=true;balanceError='';renderBalance();
+    try{await api('/api/videos/billing/balance','POST',{});await refresh();}
+    catch(error){balanceError=error.message;}
+    finally{balanceLoading=false;renderBalance();}
+  }
+  for(const button of document.querySelectorAll('[data-fal-balance-refresh]'))button.addEventListener('click',refreshBalance);
   let libraryProjectSignature='';
   const state=()=>getStudio()?.videos;let selectedImages=[],imageSignature='';
   const provider=()=>document.querySelector('input[name="video-provider"]:checked').value;
@@ -68,10 +89,13 @@ export function setupVideos({ getStudio, api, refresh, toast, showPage }) {
   }
   function connectionStatus(){
     if(!state())return;const connection=state().connection;
-    $('fal-billing-status').textContent=connection.billingConfigured?'✓ Billing key saved':'Uses generation key';
-    $('video-billing-key').placeholder=connection.billingConfigured?'Billing key saved · enter a new key to replace it':'Leave blank to use your generation key';
+    $('fal-billing-status').textContent=connection.billingConfigured?'✓ Admin key saved':'Optional · no admin key';
+    $('video-billing-key').placeholder=connection.billingConfigured?'Admin key saved · enter a new key to replace it':'Paste your admin-scope fal.ai key';
     $('fal-key-status').textContent=connection.falConfigured?'✓ Key saved':'No key saved';$('fal-key-status').className=`status-badge ${connection.falConfigured?'':'failed'}`;
-    $('video-fal-key').placeholder=connection.falConfigured?'Key saved · enter a new key to replace it':'Paste your fal.ai API key';
+    $('video-fal-key').placeholder=connection.falConfigured?'Generation key saved · enter a new key to replace it':'Paste your regular fal.ai API key';
+    renderBalance();
+    if(!connection.billingConfigured){balanceRequested=false;balanceError='';}
+    else if(!balanceRequested){balanceRequested=true;void refreshBalance();}
     $('video-pod-status').textContent=connection.podConfigured?'RunPod video connection saved.':'No RunPod video service connected.';
     const connected=provider()==='fal'?connection.falConfigured:connection.podConfigured;
     $('video-connection-note').hidden=connected;
@@ -96,8 +120,8 @@ export function setupVideos({ getStudio, api, refresh, toast, showPage }) {
     try{await api(`/api/videos/${deletingVideoId}/trash`,'POST',{});$('delete-video-dialog').close();await refresh();toast('Video moved to Trash. Linked assets stay saved.');}
     catch(error){$('delete-video-error').textContent=error.message;$('delete-video-error').hidden=false;}finally{button.disabled=false;}
   });
-  $('video-sync-costs').addEventListener('click',async()=>{const button=$('video-sync-costs');button.disabled=true;$('video-billing-result').textContent='Reading fal.ai billing events…';try{const result=await api('/api/videos/billing/sync','POST',{});await refresh();$('video-billing-result').textContent=`Saved billing results for ${result.synced} video${result.synced===1?'':'s'}.`;}catch(error){$('video-billing-result').textContent=error.message+' If billing access was denied, add an admin-scope billing key in Engine settings.';}finally{button.disabled=false;}});
-  $('video-billing-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{if(!$('video-billing-key').value.trim())throw new Error('Enter a billing key first.');await api('/api/videos/connection','PUT',{falBillingKey:$('video-billing-key').value});$('video-billing-key').value='';await refresh();toast('Billing key saved. Use Sync actual costs in Video library.');}catch(error){toast(error.message);}finally{button.disabled=false;}});
+  $('video-sync-costs').addEventListener('click',async()=>{const button=$('video-sync-costs');costSyncLoading=true;button.disabled=true;$('video-billing-result').textContent='Reading fal.ai billing events…';try{const result=await api('/api/videos/billing/sync','POST',{});await refresh();await refreshBalance();$('video-billing-result').textContent=`Saved billing results for ${result.synced} video${result.synced===1?'':'s'}.`;}catch(error){$('video-billing-result').textContent=error.message;}finally{costSyncLoading=false;renderBalance();}});
+  $('video-billing-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{if(!$('video-billing-key').value.trim())throw new Error('Enter an admin-scope billing key first.');await api('/api/videos/connection','PUT',{falBillingKey:$('video-billing-key').value});$('video-billing-key').value='';balanceRequested=true;await refresh();await refreshBalance();toast('Admin key saved for balance and video costs.');}catch(error){toast(error.message);}finally{button.disabled=false;}});
   $('new-video').addEventListener('click',()=>{showPage('videos');render();});
   $('video-library-search').addEventListener('input',renderLibrary);
   for(const id of ['video-library-project','video-library-status'])$(id).addEventListener('change',renderLibrary);

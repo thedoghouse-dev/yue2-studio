@@ -55,7 +55,7 @@ export function createVideos({data,executable,getSource,validProject=value=>valu
   const jobDir=id=>path.join(dir,id);
   const thumbnails=new Map();
   const view=job=>({...job,elapsedSeconds:job.startedAt?Math.max(0,Math.round(((job.finishedAt?new Date(job.finishedAt).getTime():Date.now())-new Date(job.startedAt).getTime())/1000)):null,hasVideo:job.status==='completed'&&existsSync(path.join(jobDir(job.id),'video.mp4'))});
-  const state=()=>({models:VIDEO_MODELS,images:db.images.filter(i=>!i.archived),draft:db.draft,jobs:db.jobs.filter(j=>!j.deletedAt).map(view).reverse(),trash:db.jobs.filter(j=>j.deletedAt).map(view).reverse(),connection:{falConfigured:Boolean(config.falKey),billingConfigured:Boolean(config.falBillingKey),podConfigured:Boolean(config.podURL&&config.podToken),podURL:config.podURL}});
+  const state=()=>({models:VIDEO_MODELS,images:db.images.filter(i=>!i.archived),draft:db.draft,jobs:db.jobs.filter(j=>!j.deletedAt).map(view).reverse(),trash:db.jobs.filter(j=>j.deletedAt).map(view).reverse(),accountBilling:config.falBillingKey?db.accountBilling??null:null,connection:{falConfigured:Boolean(config.falKey),billingConfigured:Boolean(config.falBillingKey),podConfigured:Boolean(config.podURL&&config.podToken),podURL:config.podURL}});
   async function plan(input){
     if(!input||typeof input!=='object')fail('Choose a song and describe your video.');
     const model=VIDEO_MODELS.find(m=>m.id===input.model&&m.provider===input.provider);if(!model)fail('Choose a supported video model.');
@@ -107,10 +107,11 @@ export function createVideos({data,executable,getSource,validProject=value=>valu
       finally{job.finishedAt=new Date().toISOString();save();active=null;setImmediate(next);}
     })();active={job,controller,running,config:sessionConfig};
   }
-  let billingBusy=false;
+  let billingBusy=false,balanceBusy=false;
   async function syncCosts(job){
     const ids=[...new Set(job.clips.map(c=>c?.remote?.id).filter(Boolean))];
-    const fetched=await providers.billing(config,job),reported=new Set(fetched.map(e=>e.requestId));
+    const key=config.falBillingKey,fetched=await providers.billing({falBillingKey:key},job),reported=new Set(fetched.map(e=>e.requestId));
+    if(config.falBillingKey!==key)fail('The billing key changed. Sync costs again.',409);
     const events=[...fetched,...(job.billing?.events??[]).filter(e=>ids.includes(e.requestId)&&!reported.has(e.requestId))],matched=new Set(events.map(e=>e.requestId));
     job.billing={currency:'USD',actualCost:events.reduce((sum,e)=>sum+e.costUSD,0),matchedRequests:matched.size,totalRequests:ids.length,complete:ids.length>0&&matched.size===ids.length&&!job.clips.some(c=>c?.submissionUnknown),events,syncedAt:new Date().toISOString()};save();
   }
@@ -119,8 +120,18 @@ export function createVideos({data,executable,getSource,validProject=value=>valu
     state,
     clearProject(id){for(const job of db.jobs)if(job.projectId===id)job.projectId='';save();},
     async handle(req,res,route,{body,send,serveFile}){
+      if(route==='/api/videos/billing/balance'&&req.method==='POST'){
+        if(!config.falBillingKey)fail('Save an admin-scope billing key in Engine settings first.',409);
+        if(balanceBusy)fail('Balance refresh is already running.',409);
+        balanceBusy=true;const key=config.falBillingKey;
+        try{
+          const result=await providers.balance({falBillingKey:key});
+          if(config.falBillingKey!==key)fail('The billing key changed. Refresh the balance again.',409);
+          db.accountBilling={balance:result.balance,currency:result.currency,checkedAt:result.checkedAt};save();send(res,200,db.accountBilling);return true;
+        }finally{balanceBusy=false;}
+      }
       if(route==='/api/videos/billing/sync'&&req.method==='POST'){
-        if(billingBusy)fail('Billing sync is already running.',409);if(!config.falBillingKey&&!config.falKey)fail('Save a fal.ai key in Engine settings first.',409);
+        if(billingBusy)fail('Billing sync is already running.',409);if(!config.falBillingKey)fail('Save an admin-scope billing key in Engine settings first.',409);
         billingBusy=true;let synced=0;
         try{for(const job of db.jobs.filter(j=>j.provider==='fal'&&j.clips.some(c=>c?.remote?.id))){await syncCosts(job);synced++;}send(res,200,{synced});return true;}
         finally{billingBusy=false;}
@@ -159,12 +170,13 @@ export function createVideos({data,executable,getSource,validProject=value=>valu
         if(input.podToken!==undefined){const token=string(input.podToken,'RunPod video token',250);if(token)next.podToken=token;}
         if(input.falKey!==undefined&&!next.falKey)fail('Enter your fal.ai API key.');
         if(input.podURL!==undefined&&!next.podToken)fail('Enter the API token configured on your MiniMax H3 video service.');
+        if(next.falBillingKey!==config.falBillingKey){delete db.accountBilling;save();}
         config=next;atomic(keyFile,config);send(res,200,state().connection);return true;
       }
       if(route==='/api/videos/connection'&&req.method==='DELETE'){
         const input=await body(req);if(!['fal','runpod','billing'].includes(input.provider))fail('Choose a provider.');
         if(active?.job.provider===input.provider)fail('Finish or cancel the active video before disconnecting.',409);
-        if(input.provider==='billing')config.falBillingKey='';else if(input.provider==='fal')config.falKey='';else{config.podURL='';config.podToken='';}atomic(keyFile,config);send(res,200,state().connection);return true;
+        if(input.provider==='billing'){config.falBillingKey='';delete db.accountBilling;save();}else if(input.provider==='fal')config.falKey='';else{config.podURL='';config.podToken='';}atomic(keyFile,config);send(res,200,state().connection);return true;
       }
       if(route==='/api/videos/check-pod'&&req.method==='POST'){ensureConnection('runpod');await providers.checkPod(config);send(res,200,{ready:true});return true;}
       if(route==='/api/videos/draft'&&req.method==='PUT'){

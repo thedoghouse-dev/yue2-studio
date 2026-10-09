@@ -38,7 +38,7 @@ function mediaURL(value) {
 export function createVideoProviders({fetcher=fetch,pollMs=3000}={}) {
   async function request(url,config,{method='GET',body,signal}={}) {
     const response=await fetcher(url,{method,headers:{Authorization:config.provider==='fal'?`Key ${config.falKey}`:`Bearer ${config.podToken}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,redirect:'error',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(60000)]):AbortSignal.timeout(60000)});
-    if(!response.ok&&url.startsWith('https://api.fal.ai/v1/models/billing-events')&&[401,403].includes(response.status))throw Object.assign(new Error('fal.ai denied billing access. Save an admin-scope billing key in Engine settings.'),{status:403});
+    if(!response.ok&&(url.startsWith('https://api.fal.ai/v1/models/billing-events')||url.startsWith('https://api.fal.ai/v1/account/billing'))&&[401,403].includes(response.status))throw Object.assign(new Error('fal.ai denied billing access. Save an admin-scope billing key in Engine settings.'),{status:403});
     if(!response.ok)throw new Error(response.status===401||response.status===403?'Video provider rejected the saved key or token. Update Engine settings.':`Video provider request failed (${response.status}). Check your balance and model availability. No automatic paid retry was made.`);
     return response;
   }
@@ -60,7 +60,15 @@ export function createVideoProviders({fetcher=fetch,pollMs=3000}={}) {
     catch(error){if(existsSync(file))unlinkSync(file);throw error;}
   }
   return {
+    async balance(config){
+      if(!config.falBillingKey)throw Object.assign(new Error('Save an admin-scope billing key in Engine settings first.'),{status:409});
+      const result=await json('https://api.fal.ai/v1/account/billing?expand=credits',{provider:'fal',falKey:config.falBillingKey});
+      const {current_balance:balance,currency}=result.credits??{};
+      if(typeof balance!=='number'||!Number.isFinite(balance)||typeof currency!=='string'||!/^[A-Z]{3}$/.test(currency))throw new Error('fal.ai returned an unexpected credit balance.');
+      return {balance,currency,checkedAt:new Date().toISOString()};
+    },
     async billing(config,job){
+      if(!config.falBillingKey)throw Object.assign(new Error('Save an admin-scope billing key in Engine settings first.'),{status:409});
       const ids=[...new Set(job.clips.map(c=>c?.remote?.id).filter(Boolean))],events=[];
       if(!ids.length)return events;
       const start=new Date(new Date(job.createdAt).getTime()-3600000),end=new Date(Math.min(Date.now()+60000,start.getTime()+90*86400000));
@@ -68,7 +76,7 @@ export function createVideoProviders({fetcher=fetch,pollMs=3000}={}) {
         const batch=ids.slice(offset,offset+50);let cursor=null;
         for(let page=0;page<20;page++){
           const params=new URLSearchParams({endpoint_id:job.model,request_id:batch.join(','),start:start.toISOString(),end:end.toISOString(),limit:'1000'});if(cursor)params.set('cursor',cursor);
-          const result=await json('https://api.fal.ai/v1/models/billing-events?'+params,{...config,falKey:config.falBillingKey||config.falKey,provider:'fal'});
+          const result=await json('https://api.fal.ai/v1/models/billing-events?'+params,{provider:'fal',falKey:config.falBillingKey});
           if(!Array.isArray(result.billing_events))throw new Error('fal.ai returned an unexpected billing response.');
           for(const event of result.billing_events)if(batch.includes(event.request_id)&&event.endpoint_id===job.model){if(typeof event.cost_total!=='number'||!Number.isFinite(event.cost_total)||event.cost_total<0)throw new Error('fal.ai returned an invalid billing amount.');events.push({requestId:event.request_id,costUSD:event.cost_total,timestamp:event.timestamp});}
           if(!result.has_more&&!result.next_cursor)break;

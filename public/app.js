@@ -5,6 +5,32 @@ import { setupFinder } from './finder.js';
 import { setupCompositionScore } from './composition-score.js';
 import { setupLyrics } from './lyrics.js';
 const $ = id => document.getElementById(id);
+// Appearance belongs to this browser, independently of the music workspace.
+const themePreference = 'yue2-studio-theme';
+const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+let explicitTheme = null;
+try { const saved = localStorage.getItem(themePreference); if (saved === 'light' || saved === 'dark') explicitTheme = saved; } catch {}
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === 'dark';
+  $('theme-toggle').setAttribute('aria-pressed', String(dark));
+  $('theme-toggle').setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} mode`);
+  $('theme-icon').textContent = dark ? '☀' : '☾';
+  $('theme-label').textContent = dark ? 'Light mode' : 'Dark mode';
+}
+applyTheme(explicitTheme ?? (systemTheme.matches ? 'dark' : 'light'));
+$('theme-toggle').addEventListener('click', () => {
+  explicitTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  applyTheme(explicitTheme);
+  try { localStorage.setItem(themePreference, explicitTheme); } catch {}
+});
+systemTheme.addEventListener('change', event => { if (!explicitTheme) applyTheme(event.matches ? 'dark' : 'light'); });
+window.addEventListener('storage', event => {
+  if (event.key !== themePreference && event.key !== null) return;
+  explicitTheme = event.newValue === 'light' || event.newValue === 'dark' ? event.newValue : null;
+  applyTheme(explicitTheme ?? (systemTheme.matches ? 'dark' : 'light'));
+});
+
 const escape = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 let studio = null, selected = null, page = 'create', pollBusy = false, dirty = false, saveTimer, toastTimer, loading = false;
 const selectedSongs=new Set();let visibleSongs=[],projectSignature='';
