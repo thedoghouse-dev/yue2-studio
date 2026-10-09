@@ -1,0 +1,20 @@
+{
+  "name": "yue2-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local song creation studio powered by YuE2 and audio.cpp",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "setup": "node scripts/setup.mjs",
+    "setup:sheetsage": "node scripts/setup.mjs --sheetsage"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@ffmpeg-installer/win32-x64": "^4.1.0",
+    "abcjs": "^6.7.1"
+  }
+}

@@ -1,0 +1,12 @@
+import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {randomBytes,createHash} from 'node:crypto';
+import path from 'node:path';
+const root=path.resolve(import.meta.dirname,'..');
+const files=Object.fromEntries(['worker.py','setup_worker.py'].map(name=>[name,readFileSync(path.join(root,'cloud',name),'utf8')]));
+const payload=Buffer.from(JSON.stringify(files)).toString('base64');
+const bootstrap="import os,json,base64,pathlib,runpy; p=pathlib.Path('/workspace/yue2-service'); p.mkdir(parents=True,exist_ok=True); files=json.loads(base64.b64decode(os.environ['YUE2_WORKER_BUNDLE'])); [(p/name).write_text(content,encoding='utf-8') for name,content in files.items()]; import sys; sys.path.insert(0,str(p)); runpy.run_path(str(p/'worker.py'),run_name='__main__')";
+const plan={name:'yue2-studio-bf16',image:'runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404',cloud:'COMMUNITY',gpu:{id:'NVIDIA GeForce RTX 4090',count:1,minRamPerGpu:32,minVcpuCountPerGpu:8,minCudaVersion:'12.8'},disk:30,ports:['8000/http'],env:{YUE2_WORKER_TOKEN:randomBytes(32).toString('hex'),YUE2_WORKER_BUNDLE:payload},args:JSON.stringify({entrypoint:['python3','-u','-c'],cmd:[bootstrap]})};
+mkdirSync(path.join(root,'data'),{recursive:true});const file=path.join(root,'data','runpod-pod-plan.json');writeFileSync(file,JSON.stringify(plan,null,2),{mode:0o600});
+console.log(`Prepared ${file}. It contains a private worker token; do not share it.`);
+console.log(`Worker source SHA-256: ${createHash('sha256').update(JSON.stringify(files)).digest('hex')}`);
+console.log('This command creates no RunPod resources. Monitor the test budget and terminate the pod after use; this configuration does not schedule termination.');
