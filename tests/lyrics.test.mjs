@@ -50,6 +50,10 @@ test('Lyrics HTTP persistence, key privacy, failed replies, concurrency, and mod
   let state=await(await request('/api/lyrics')).json();assert.equal(state.connection.configured,false);
   const draft=await(await request('/api/lyrics','POST',{title:'Starting over',lyrics:'Original words',model:'openai/test'})).json();
   assert.equal((await request(`/api/lyrics/${draft.id}/chat`,'POST',{message:'Make it hopeful'})).status,400);
+  const studioSummary=await(await request('/api/studio')).json();
+  assert.equal(studioSummary.lyricSessions[0].id,draft.id);
+  assert.equal(studioSummary.lyricSessions[0].lyrics,'Original words');
+  assert.equal(studioSummary.lyricSessions[0].messages,undefined);
   assert.equal((await request('/api/openrouter/connection','PUT',{key:'secret-test-key'})).status,200);
   assert.equal((await(await request('/api/openrouter/models')).json()).models.length,1);
   assert.ok(!JSON.stringify(await(await request('/api/lyrics')).json()).includes('secret-test-key'));

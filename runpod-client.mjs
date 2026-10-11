@@ -21,6 +21,7 @@ export function createRunpodClient({fetcher=fetch,pollMs=2000,timeoutMs=30*60*10
   const cancel=(config,id)=>json(config,`/jobs/${id}/cancel`,{method:'POST',body:{}});
   return {
     async health(config){const health=await json(config,'/health');if(health.protocol!=='yue2-studio/v1'||health.model!=='yue2-3b-bf16.gguf'||health.vae!=='yue2-vae-f32.gguf')throw new Error('Connect the supplied YuE2 Studio BF16 worker, not another RunPod service.');return health;},
+    async setupHealth(config){const health=await json(config,'/health');if(health.protocol!=='yue2-studio/h3-setup/v1'||health.model!=='MiniMaxAI/MiniMax-H3'||!['h3-download','h3-video'].includes(health.workload))throw new Error('Connect the supplied MiniMax H3 installer.');return health;},
     cancel,
     async run(song,dir,config,{signal,onProgress=()=>{}}={}){
       const timed=AbortSignal.timeout(timeoutMs);const combined=signal?AbortSignal.any([signal,timed]):timed;

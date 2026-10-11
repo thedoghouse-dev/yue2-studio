@@ -35,7 +35,10 @@ def prepare():
             state['gpuMemoryMB'] = memory
             exe, model = setup(ROOT, lambda stage: state.update(stage=stage))
             engine.update(executable=exe, model=model)
-        state.update(ready=True, stage='BF16 worker ready')
+        if os.environ.get('YUE2_INCLUDE_VIDEO') == '1':
+            from h3_worker import install_model, ROOT as VIDEO_ROOT
+            install_model(VIDEO_ROOT, lambda stage: state.update(stage=stage))
+        state.update(ready=True, stage='Song engine ready; MiniMax cached for serverless' if os.environ.get('YUE2_INCLUDE_VIDEO') == '1' else 'BF16 worker ready')
     except Exception as error:
         state.update(stage='Setup failed', error=str(error))
 

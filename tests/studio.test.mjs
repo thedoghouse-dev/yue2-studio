@@ -82,10 +82,13 @@ test('HTTP generation lifecycle, queue, files, security, failure, cancellation, 
   const invalidRange = await fetch(`${url}/api/songs/${one.id}/audio`, { headers: { Range: 'bytes=9999-' } }); assert.equal(invalidRange.status, 416);
   const score = await request(`/api/songs/${one.id}/score`); assert.match(await score.text(), /K:C/);
   const userABC='X:1\nT:Chosen sheet music\nM:4/4\nL:1/8\nK:C\nCDEF G2 G2 |';
-  const withScore=await(await request('/api/songs','POST',{...input,abc:userABC,lyrics:'[Verse]\nMy words follow this melody'})).json();
+  const lyricDraft=await(await request('/api/lyrics','POST',{title:'Source draft',lyrics:'[Verse]\nMy words follow this melody',model:''})).json();
+  assert.equal((await request('/api/songs','POST',{...input,lyricSource:'11111111-1111-1111-1111-111111111111'})).status,400);
+  assert.equal((await request('/api/songs','POST',{...input,scoreSource:'song:11111111-1111-1111-1111-111111111111'})).status,400);
+  const withScore=await(await request('/api/songs','POST',{...input,abc:userABC,lyricSource:lyricDraft.id,scoreSource:'song:'+one.id,lyrics:'[Verse]\nMy words follow this melody'})).json();
   assert.equal((await waitFor(withScore.id,'completed')).hasAudio,true);
   assert.equal(await(await request(`/api/songs/${withScore.id}/score`)).text(),userABC);
-  const stored=await(await request(`/api/songs/${withScore.id}/request`)).json();assert.equal(stored.abc,userABC);assert.equal(stored.lyrics,'[Verse]\nMy words follow this melody');
+  const stored=await(await request(`/api/songs/${withScore.id}/request`)).json();assert.equal(stored.lyricSource,lyricDraft.id);assert.equal(stored.scoreSource,'song:'+one.id);assert.equal(stored.abc,userABC);assert.equal(stored.lyrics,'[Verse]\nMy words follow this melody');
   const failed = await (await request('/api/songs', 'POST', { ...input, lyrics: 'FAIL' })).json(); assert.equal((await waitFor(failed.id, 'failed')).hasAudio, false);
   const slow = await (await request('/api/songs', 'POST', { ...input, lyrics: 'SLOW' })).json(); await waitFor(slow.id, 'running');
   const blocked = await request('/api/settings', 'PUT', {}); assert.equal(blocked.status, 409);
@@ -98,5 +101,5 @@ test('HTTP generation lifecycle, queue, files, security, failure, cancellation, 
   const dbFile = path.join(temp, 'data', 'studio.json'); const db = JSON.parse(readFileSync(dbFile, 'utf8'));
   db.songs.push({ ...input, id: '11111111-1111-1111-1111-111111111111', status: 'running' }); writeFileSync(dbFile, JSON.stringify(db));
   await start(); const restored = await (await request('/api/studio')).json();
-  assert.equal(restored.draft.title, 'Persistent draft'); assert.equal(restored.songs.find(s => s.id === one.id).status, 'completed'); assert.equal(restored.songs[0].status, 'interrupted');
+  assert.equal(restored.songs.find(s=>s.id===withScore.id).lyricSource,lyricDraft.id); assert.equal(restored.songs.find(s=>s.id===withScore.id).scoreSource,'song:'+one.id); assert.equal(restored.draft.title, 'Persistent draft'); assert.equal(restored.songs.find(s => s.id === one.id).status, 'completed'); assert.equal(restored.songs[0].status, 'interrupted');
 });

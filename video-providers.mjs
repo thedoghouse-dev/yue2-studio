@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { createWriteStream, existsSync, unlinkSync } from 'node:fs';
+import { createWriteStream, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -86,6 +86,10 @@ export function createVideoProviders({fetcher=fetch,pollMs=3000}={}) {
       return events;
     },
     async pricing(config,endpoint){return json(`https://api.fal.ai/v1/models/pricing?endpoint_id=${encodeURIComponent(endpoint)}`,{...config,provider:'fal'});},
+    async checkServerless(config){
+      if(!/^[a-zA-Z0-9_-]{1,100}$/.test(config.endpointId??'')||!config.serverlessKey)throw new Error('Choose a serverless endpoint and save a RunPod account key.');
+      return json(`https://api.runpod.ai/v2/${config.endpointId}/health`,{...config,provider:'runpod',podToken:config.serverlessKey});
+    },
     async checkPod(config){
       const origin=validateVideoPodURL(config.podURL),models=await json(origin+'/v1/models',{...config,provider:'runpod'});
       if(!models.data?.some(model=>/minimax.*h3/i.test(model.id)))throw new Error('The service is reachable but does not advertise MiniMax H3. Connect the H3 FL2VA service.');
@@ -97,12 +101,32 @@ export function createVideoProviders({fetcher=fetch,pollMs=3000}={}) {
         if(!result.request_id)throw new Error('fal did not return a request ID. Check request history before trying again.');
         return {id:result.request_id,statusURL:queueURL(result.status_url),resultURL:queueURL(result.response_url),cancelURL:queueURL(result.cancel_url)};
       }
+      if(config.runpodMode==='serverless'){
+        if(!/^[a-zA-Z0-9_-]{1,100}$/.test(config.endpointId??'')||!config.serverlessKey)throw new Error('Configure RunPod serverless in RunPod cloud first.');
+        const result=await json(`https://api.runpod.ai/v2/${config.endpointId}/run`,{...config,provider:'runpod',podToken:config.serverlessKey},{method:'POST',body:{input:{prompt:`integrated_multimodal_description: ${prompt}\noverall_soundscape: Quiet ambience.\nnon_diegetic_music: No background music.`,seconds:job.clipSeconds,ratio:job.ratio,seed:(job.seed+index)%2147483648},policy:{executionTimeout:3600000,ttl:7200000}},signal});
+        if(typeof result.id!=='string'||!/^[-a-zA-Z0-9_]{1,150}$/.test(result.id))throw new Error('RunPod did not acknowledge a scene job. Check endpoint requests before retrying.');
+        return {id:result.id,endpointId:config.endpointId};
+      }
       const origin=validateVideoPodURL(config.podURL);
       const result=await json(origin+'/v1/videos',{...config,provider:'runpod'},{method:'POST',body:{task:'t2va',prompt:`integrated_multimodal_description: ${prompt}\noverall_soundscape: Quiet ambience.\nnon_diegetic_music: No background music.`,conditions:[],target:{short_edge:768,aspect_ratio:job.ratio,duration_seconds:job.clipSeconds},seed:(job.seed+index)%2147483648},signal});
       if(typeof result.id!=='string'||!/^[-a-zA-Z0-9_]{1,150}$/.test(result.id))throw new Error('RunPod did not return a valid video ID.');
       return {id:result.id,statusURL:origin+'/v1/videos/'+result.id,resultURL:origin+'/v1/videos/'+result.id+'/content'};
     },
     async waitAndDownload(config,provider,remote,file,{signal,onStatus=()=>{}}){
+      if(provider==='runpod'&&remote.endpointId){
+        if(!/^[a-zA-Z0-9_-]{1,100}$/.test(remote.endpointId)||!/^[-a-zA-Z0-9_]{1,150}$/.test(remote.id))throw new Error('Invalid serverless job reference.');
+        const route=`https://api.runpod.ai/v2/${remote.endpointId}/status/${remote.id}`;
+        while(true){
+          signal.throwIfAborted();const response=await request(route,{...config,provider:'runpod',podToken:config.serverlessKey},{signal});
+          const raw=await response.text();if(raw.length>18*1024*1024)throw new Error('Serverless scene result exceeds its size limit.');const result=JSON.parse(raw);
+          if(result.status==='COMPLETED'){
+            const encoded=result.output?.videoBase64;if(typeof encoded!=='string'||encoded.length>16*1024*1024||!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))throw new Error('Invalid serverless video output.');
+            const bytes=Buffer.from(encoded,'base64');if(bytes.length<24||bytes.toString('ascii',4,8)!=='ftyp')throw new Error('Serverless output is not an MP4.');writeFileSync(file,bytes);return;
+          }
+          if(['FAILED','CANCELLED','TIMED_OUT'].includes(result.status))throw new Error('Serverless scene failed. Check worker logs; completed scenes remain saved.');
+          if(!['IN_QUEUE','IN_PROGRESS'].includes(result.status))throw new Error('Unknown serverless scene status.');onStatus(result.status);await delay(pollMs,undefined,{signal});
+        }
+      }
       const conf={...config,provider};
       while(true){
         signal.throwIfAborted();
@@ -115,6 +139,6 @@ export function createVideoProviders({fetcher=fetch,pollMs=3000}={}) {
       if(provider==='fal'){const result=await json(queueURL(remote.resultURL),conf,{signal});await download(result.video?.url,file,signal);}
       else await download(remote.resultURL,file,signal,conf);
     },
-    async cancel(config,provider,remote){if(provider==='fal'&&remote?.cancelURL)await request(queueURL(remote.cancelURL),{...config,provider},{method:'PUT'});},
+    async cancel(config,provider,remote){if(provider==='runpod'&&remote?.endpointId&&/^[a-zA-Z0-9_-]{1,100}$/.test(remote.endpointId)&&/^[-a-zA-Z0-9_]{1,150}$/.test(remote.id))await request(`https://api.runpod.ai/v2/${remote.endpointId}/cancel/${remote.id}`,{...config,provider:'runpod',podToken:config.serverlessKey},{method:'POST'});if(provider==='fal'&&remote?.cancelURL)await request(queueURL(remote.cancelURL),{...config,provider},{method:'PUT'});},
   };
 }

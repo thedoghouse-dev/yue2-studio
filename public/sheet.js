@@ -43,6 +43,28 @@ export function setupSheetMusic({ getStudio, api, refresh, toast, loadDraft, mar
   });
   window.addEventListener('pagehide', () => microphone.dispose());
   const url = (id, type) => `/api/transcriptions/${id}/${type}`;
+  function renderLibrary(jobs) {
+    if ($('page-sheet-library').hidden) return;
+    const search=$('sheet-library-search').value.trim().toLowerCase(),status=$('sheet-library-status').value;
+    const visible=jobs.filter(job=>(!search||`${job.title} ${job.filename??''}`.toLowerCase().includes(search))&&(status==='all'||(status==='ready'?job.hasScore:status==='active'?['queued','running'].includes(job.status):!job.hasScore&&!['queued','running'].includes(job.status))));
+    $('sheet-library-count').textContent=`${visible.length} score${visible.length===1?'':'s'}`;
+    const grid=$('sheet-library-grid'),key=JSON.stringify(visible.map(job=>[job.id,job.title,job.filename,job.status,job.stage,job.hasScore]));
+    if(grid.dataset.signature===key)return;grid.dataset.signature=key;
+    grid.innerHTML=visible.length?visible.map(job=>`<article class="song-card sheet-library-card"><button type="button" class="sheet-thumbnail" data-sheet-select="${job.id}" aria-label="Open ${escape(job.title)}"><span aria-hidden="true">♬</span></button><span class="status-badge ${escape(job.status)}">${escape(job.stage)}</span><h3>${escape(job.title)}</h3><p class="field-help">${escape(job.filename??'Audio transcription')}</p><div class="song-actions"><button type="button" class="secondary related-button" data-related="sheet:${job.id}">&#8984; Related assets</button><button type="button" class="secondary" data-sheet-select="${job.id}">${job.hasScore?'Open score':'View session'} ↗</button>${job.hasScore?`<a class="secondary" href="${url(job.id,'score')}?download">Download ABC ↓</a><button type="button" class="secondary" data-sheet-compose="${job.id}">Create a song ↗</button>`:''}</div><p class="field-help">${new Date(job.createdAt).toLocaleDateString()}</p></article>`).join(''):`<div class="empty-library"><h3>${jobs.length?'No matching scores.':'A place for your melodies.'}</h3><p>${jobs.length?'Try a different search or filter.':'Choose New sheet music to upload audio or record a melody with your microphone.'}</p></div>`;
+    for(const job of visible.filter(job=>job.hasScore)) {
+      const target=grid.querySelector(`[data-sheet-select="${job.id}"]`);
+      void fetch(url(job.id,'score')).then(async response=>{
+        if(!response.ok||!window.ABCJS)return;
+        const abc=await response.text();if(!target.isConnected)return;
+        if($('page-sheet-library').hidden){grid.dataset.signature='';return;}
+        const notation=document.createElement('div');notation.className='sheet-thumbnail-notation';notation.setAttribute('aria-hidden','true');target.replaceChildren(notation);
+        window.ABCJS.renderAbc(notation,abc,{staffwidth:300,oneSvgPerLine:true,paddingtop:8,paddingbottom:8});
+        for(const row of [...notation.querySelectorAll('svg')].slice(2))row.remove();
+      }).catch(()=>{});
+    }
+  }
+  $('sheet-library-search').addEventListener('input',render);
+  $('sheet-library-status').addEventListener('change',render);
   function render() {
     const studio = getStudio(); if (!studio) return;
     const ready = studio.sheetSage?.ready;
@@ -59,6 +81,7 @@ export function setupSheetMusic({ getStudio, api, refresh, toast, loadDraft, mar
       : setup?.status === 'failed' ? `Setup failed: ${setup.error}. Run Setup SheetSage2.cmd to retry.`
       : 'Run Setup SheetSage2.cmd from the project folder to install the local transcription model and audio converter.';
     const jobs = studio.transcriptions ?? [];
+    renderLibrary(jobs);
     // abcjs measures text while engraving. Hidden pages produce zero-height staff lines.
     if ($('page-sheet').hidden) return;
     const historyKey = JSON.stringify(jobs.map(j => [j.id, j.status, j.stage]));
@@ -66,8 +89,15 @@ export function setupSheetMusic({ getStudio, api, refresh, toast, loadDraft, mar
       $('transcription-history').dataset.signature = historyKey;
       $('transcription-history').innerHTML = jobs.length ? jobs.map(j => `<button type="button" class="session-row" data-sheet-select="${j.id}"><span class="session-art">♬</span><span class="session-info"><strong>${escape(j.title)}</strong><small>${escape(j.stage)}</small></span><span>↗</span></button>`).join('') : '<p class="empty-recent">Your transcribed scores will appear here.</p>';
     }
-    const job = jobs.find(j => j.id === selected) ?? jobs[0];
-    if (!job) return;
+    const job = jobs.find(j => j.id === selected);
+    $('transcribe-form').hidden=Boolean(job);
+    $('transcribe-form').closest('.sheet-sidebar').hidden=Boolean(job);
+    document.querySelector('.sheet-layout').classList.toggle('viewing-score',Boolean(job));
+    if (!job) {
+      signature='';currentScore=null;$('score-status').textContent='';
+      $('transcription-result').innerHTML='<div class="empty-library"><h3>Hear it. Then see it.</h3><p>Upload audio or record a melody to create a new score. Saved scores are in your sheet music library.</p></div>';
+      return;
+    }
     const key = JSON.stringify([job.id, job.status, job.stage, job.hasScore, job.error]);
     if (key === signature) return;
     signature = key; currentScore = null;
@@ -77,7 +107,7 @@ export function setupSheetMusic({ getStudio, api, refresh, toast, loadDraft, mar
     } else if (!job.hasScore) {
       $('transcription-result').innerHTML = `<h2>${escape(job.title)}</h2><p class="error-message">${escape(job.error ?? `This transcription was ${job.status}. Choose the audio file again to start another session.`)}</p>${job.startedAt ? `<a class="secondary" href="${url(job.id,'log')}" target="_blank">Session log ↗</a>` : ''}`;
     } else {
-      $('transcription-result').innerHTML = `<h2>${escape(job.title)}</h2><p class="print-heading">SheetSage2 transcription · ${escape(job.filename)}</p><div class="song-actions score-actions"><a class="secondary" href="${url(job.id,'score')}?download">Download ABC ↓</a><button type="button" class="secondary" id="download-sheet-svg" disabled>Download SVG ↓</button><button type="button" class="secondary" id="print-sheet" disabled>Print / Save PDF ↗</button><button type="button" class="secondary" data-sheet-use="${job.id}" disabled>Use score in YuE2 ↗</button><a class="secondary" href="${url(job.id,'log')}" target="_blank">Session log ↗</a></div><audio class="source-player" controls preload="metadata" src="${url(job.id,'audio')}"></audio><p class="transcription-note">This is an estimated melody-and-chord score. Review the notes and timing against your recording before performing or arranging it.</p><p id="notation-warning" class="error-message" hidden></p><div id="sheet-notation" class="score-paper" aria-label="Rendered sheet music"><p>Rendering the score…</p></div><details class="score-raw"><summary>View original ABC notation</summary><pre id="transcription-abc"></pre></details>`;
+      $('transcription-result').innerHTML = `<h2>${escape(job.title)}</h2><p class="print-heading">SheetSage2 transcription · ${escape(job.filename)}</p><div class="song-actions score-actions"><button type="button" class="secondary related-button" data-related="sheet:${job.id}">&#8984; Related assets</button><a class="secondary" href="${url(job.id,'score')}?download">Download ABC ↓</a><button type="button" class="secondary" id="download-sheet-svg" disabled>Download SVG ↓</button><button type="button" class="secondary" id="print-sheet" disabled>Print / Save PDF ↗</button><button type="button" class="secondary" data-sheet-use="${job.id}" disabled>Use score in YuE2 ↗</button><a class="secondary" href="${url(job.id,'log')}" target="_blank">Session log ↗</a></div><audio class="source-player" controls preload="metadata" src="${url(job.id,'audio')}"></audio><p class="transcription-note">This is an estimated melody-and-chord score. Review the notes and timing against your recording before performing or arranging it.</p><p id="notation-warning" class="error-message" hidden></p><div id="sheet-notation" class="score-paper" aria-label="Rendered sheet music"><p>Rendering the score…</p></div><details class="score-raw"><summary>View original ABC notation</summary><pre id="transcription-abc"></pre></details>`;
       renderNotation(job, key);
     }
   }
@@ -155,7 +185,13 @@ export function setupSheetMusic({ getStudio, api, refresh, toast, loadDraft, mar
   document.addEventListener('click', async event => {
     const button = event.target.closest('button'); if (!button) return;
     try {
-      if (button.dataset.sheetSelect) { selected = button.dataset.sheetSelect; signature = ''; render(); }
+      if (button.hasAttribute('data-sheet-new')) { selected=null;signature='';showPage('sheet');render(); }
+      if (button.dataset.sheetSelect) { selected = button.dataset.sheetSelect; signature = ''; showPage('sheet');render(); }
+      if (button.dataset.sheetCompose) {
+        const job=getStudio().transcriptions.find(job=>job.id===button.dataset.sheetCompose&&job.hasScore);if(!job)return;
+        const response=await fetch(url(job.id,'score'));if(!response.ok)throw new Error('Could not load the score.');
+        loadDraft({abc:await response.text(),scoreSource:`transcription:${job.id}`,mode:'full'});markDirty();showPage('create');toast('Score loaded. Add lyrics and choose your sound.');
+      }
       if (button.dataset.sheetCancel) { await api(url(button.dataset.sheetCancel,'cancel'),'POST',{}); await refresh(); }
       if (button.id === 'print-sheet' && currentScore) window.print();
       if (button.dataset.sheetUse && currentScore?.id === button.dataset.sheetUse) {

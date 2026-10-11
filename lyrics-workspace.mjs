@@ -21,8 +21,10 @@ export function createLyricsWorkspace({ data, client = createOpenRouterClient() 
   const busy = new Set();
   const connectionView = () => ({ configured: Boolean(connection.key) });
   const save = () => write(file, db);
-  const summary = s => ({ id: s.id, title: s.title, model: s.model, updatedAt: s.updatedAt });
+  const summary = s => ({ id: s.id, title: s.title, model: s.model, lyrics: s.lyrics, updatedAt: s.updatedAt });
   return {
+    list: () => [...db.sessions].sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)).map(summary),
+    has: id => db.sessions.some(s => s.id === id),
     async handle(req, res, route, { body, send }) {
       if (!route.startsWith('/api/lyrics') && !route.startsWith('/api/openrouter')) return false;
       if (route === '/api/openrouter/connection' && req.method === 'PUT') {

@@ -1,3 +1,5 @@
+import {createRunpodQueueClient} from './runpod-queue-client.mjs';
+import { createRunpodManagement } from './runpod-management.mjs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +44,12 @@ export function validateSong(input) {
   if(!['maximum','target'].includes(durationMode))fail('Choose maximum or target length.');
   if(!['follow','motif'].includes(scoreUse))fail('Choose follow score or develop as a motif.');
   if (abc && mode === 'off') fail('Choose full or melody planning to use an ABC score.');
+  const lyricSource = text(input.lyricSource ?? '', 'Lyric source', 36);
+  const scoreSource = text(input.scoreSource ?? '', 'Score source', 60);
+  if (lyricSource && !/^[a-f0-9-]{36}$/.test(lyricSource)) fail('Choose a saved lyric draft.');
+  if (scoreSource && !/^(custom|(?:song|transcription):[a-f0-9-]{36})$/.test(scoreSource)) fail('Choose a valid score source.');
   return {
+    lyricSource, scoreSource,
     title: text(input.title, 'Title', 120, true), style: text(input.style, 'Style', 2500, true),
     lyrics: text(input.lyrics ?? '', 'Lyrics', 12000), mode, abc, execution,
     seed: number(input.seed ?? 1234, 'Seed', 0, 2147483647, true),
@@ -131,7 +138,7 @@ function serveFile(req, res, file, download = false, name) {
   stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res);
 }
 
-export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, checkSheetSage, recordingSource = createRecordingSource(), runpodClient = createRunpodClient(), openRouterClient, masteringExecutable, videoProviders } = {}) {
+export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, checkSheetSage, recordingSource = createRecordingSource(), runpodClient = createRunpodClient(), runpodQueueClient = createRunpodQueueClient(), openRouterClient, masteringExecutable, videoProviders, runpodControlClient } = {}) {
   const data = path.join(root, 'data');
   const songsDir = path.join(data, 'songs');
   mkdirSync(songsDir, { recursive: true });
@@ -148,7 +155,7 @@ export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, c
   const downloading = new Set();
   const cloudFile=path.join(data,'runpod-connection.json');
   let cloud=readJSON(cloudFile,{url:'',token:''});
-  const cloudView=()=>({url:cloud.url,configured:Boolean(cloud.url&&cloud.token),model:'BF16 + F32 VAE'});
+  const cloudView=()=>({url:cloud.url??'',mode:cloud.mode??'pod',endpointId:cloud.endpointId??'',configured:cloud.mode==='serverless'?Boolean(cloud.endpointId&&runpodManagement.inferenceKey()&&runpodManagement.state().inventory?.endpoints.find(e=>e.id===cloud.endpointId)?.maxWorkers!==0):Boolean(cloud.url&&cloud.token),model:'BF16 + F32 VAE'});
   for (const song of [...db.songs, ...db.transcriptions]) if (['running', 'queued'].includes(song.status)) { song.status = 'interrupted'; song.stage = 'Interrupted'; song.error = 'The app stopped before this session finished. Start a new session to try again.'; }
   for (const song of db.songs) if (/yue2\.semantic\.truncated\s*[:=]?\s*(1|true)/.test(song.logTail ?? '')) song.truncated = true;
   const save = () => atomic(dbFile, db);
@@ -159,7 +166,7 @@ export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, c
   const directory = id => path.join(db.transcriptions.some(s => s.id === id) ? transcriptionsDir : songsDir, id);
   const converter = path.join(root, 'node_modules', '@ffmpeg-installer', 'win32-x64', 'ffmpeg.exe');
   const mastering = createMastering({ data, executable: masteringExecutable ?? converter });
-  const videos = createVideos({ validProject:projects.validProject, data, executable: masteringExecutable ?? converter, providers: videoProviders, getSource: (songId, masterId) => {
+  const videos = createVideos({ onRunpodActivity:config=>runpodManagement.recordUsage({endpointId:config.runpodMode==='serverless'?config.endpointId:undefined,podURL:config.podURL},'Video generation requested'),getRunpodAccountKey:()=>runpodManagement.inferenceKey(),validProject:projects.validProject, data, executable: masteringExecutable ?? converter, providers: videoProviders, getSource: (songId, masterId) => {
     const song = db.songs.find(s => s.id === songId);
     if (!song || song.deletedAt || song.status !== 'completed' || !existsSync(path.join(songsDir,songId,'audio.wav'))) fail('Choose a finished song with audio.',409);
     if (masterId) {
@@ -170,6 +177,12 @@ export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, c
     return { file: path.join(songsDir,songId,'audio.wav'), title: song.title };
   }});
   const jobs = () => [...db.songs, ...db.transcriptions];
+  const runpodManagement=createRunpodManagement({root,data,client:runpodControlClient,workerClient:runpodClient,
+    connectVideo:config=>videos.connectRunpod(config),connectServerless:config=>videos.connectServerless(config),
+    connectSongServerless:async config=>{if(active||jobs().some(s=>s.status==='queued'))fail('Wait for the song queue before changing the engine.',409);cloud=config;atomic(cloudFile,cloud);},
+    connectWorker:async config=>{if(active||jobs().some(s=>s.status==='queued'))fail('Wait for the generation queue before changing the worker.',409);cloud=config;atomic(cloudFile,cloud);},
+    isBusy:id=>{const songBusy=cloud.url===`https://${id}-8000.proxy.runpod.net`&&db.songs.some(s=>s.execution==='runpod'&&['queued','running'].includes(s.status));const state=videos.state();return songBusy||(state.connection.podURL===`https://${id}-30010.proxy.runpod.net`&&state.jobs.some(v=>v.provider==='runpod'&&['queued','running'].includes(v.status)));}
+  });
   function sheetReady() {
     if (checkSheetSage) return checkSheetSage(db.settings);
     const missing = [];
@@ -257,12 +270,13 @@ export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, c
       // Decode only the selected local file. Disable network protocols and cap duration at 10 minutes.
       launch(converter, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'file,pipe', '-i', path.join(dir, `upload${song.extension}`), '-t', '600', '-vn', '-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le', '-y', path.join(dir, 'source.wav')], true);
     } else if(song.execution==='runpod') {
-      const controller=new AbortController();const connection={...cloud};
+      const controller=new AbortController();const connection={...cloud,key:cloud.mode==='serverless'?runpodManagement.inferenceKey():undefined};
       active={song,child:{kill:()=>controller.abort(new Error('RunPod generation cancelled.'))}};
       song.stage='Connecting to RunPod';save();
-      active.promise=runpodClient.run(song,dir,connection,{signal:controller.signal,onProgress:job=>{
+      runpodManagement.recordUsage({endpointId:cloud.mode==='serverless'?cloud.endpointId:undefined,url:cloud.url},'Song generation requested');
+      active.promise=(cloud.mode==='serverless'?runpodQueueClient:runpodClient).run(song,dir,connection,{signal:controller.signal,onProgress:job=>{
         if(song.status==='cancelled')return;
-        song.stage=job.stage||'Generating on RunPod';song.logTail=String(job.logTail??'').slice(-6000);song.truncated=Boolean(job.truncated);save();
+        if(job.remoteJobId)song.remoteJobId=job.remoteJobId;song.stage=job.stage||'Generating on RunPod';song.logTail=String(job.logTail??'').slice(-6000);song.truncated=Boolean(job.truncated);save();
       }}).then(job=>{
         if(song.status==='cancelled')return;
         if(!song.abc&&typeof job.abc==='string'&&job.abc.length<=30000)writeFileSync(path.join(dir,'score.abc'),job.abc);
@@ -285,11 +299,12 @@ export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, c
       const url = new URL(req.url, `http://${host}`);
       const route = url.pathname;
       if (!['GET', 'HEAD'].includes(req.method) && req.headers['x-studio-token'] !== token) fail('Refresh the app and try again.', 403);
+      if (await runpodManagement.handle(req,res,route,{body,send})) return;
       if (await videos.handle(req,res,route,{body,send,serveFile})) return;
       if (await projects.handle(req,res,route,{body,send})) return;
       if (await lyricsWorkspace.handle(req, res, route, { body, send })) return;
       if (route === '/api/studio' && req.method === 'GET') {
-        return send(res, 200, { token, projects:projects.list(), videos: videos.state(), mastering: { presets: mastering.presets, jobs: mastering.list() }, settings: db.settings, runpod:cloudView(), draft: db.draft, songs: db.songs.filter(s=>!s.deletedAt).map(view).reverse(), songTrash:db.songs.filter(s=>s.deletedAt).map(view).reverse(), transcriptions: db.transcriptions.map(view).reverse(), recordings: [...db.recordings].reverse(), sheetSage: sheetReady(), sheetSageSetup: readJSON(path.join(data, 'setup-sheetsage.json'), null), runtime: ready(), setup: readJSON(path.join(data, 'setup.json'), null) });
+        return send(res, 200, { token, lyricSessions:lyricsWorkspace.list(), projects:projects.list(), videos: videos.state(), mastering: { presets: mastering.presets, jobs: mastering.list() }, settings: db.settings, runpod:cloudView(), runpodManagement:runpodManagement.state(), draft: db.draft, songs: db.songs.filter(s=>!s.deletedAt).map(view).reverse(), songTrash:db.songs.filter(s=>s.deletedAt).map(view).reverse(), transcriptions: db.transcriptions.map(view).reverse(), recordings: [...db.recordings].reverse(), sheetSage: sheetReady(), sheetSageSetup: readJSON(path.join(data, 'setup-sheetsage.json'), null), runtime: ready(), setup: readJSON(path.join(data, 'setup.json'), null) });
       }
       if(route==='/api/runpod/connection'&&req.method==='PUT'){
         if(active||jobs().some(s=>s.status==='queued'))fail('Wait for the current queue to finish before changing the RunPod connection.',409);
@@ -304,7 +319,7 @@ export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, c
       }
       if(route==='/api/runpod/check'&&req.method==='POST'){
         if(!cloudView().configured)fail('Connect your RunPod worker first.',400);
-        return send(res,200,await runpodClient.health(cloud));
+        return send(res,200,await (cloud.mode==='serverless'?runpodQueueClient.health({...cloud,key:runpodManagement.inferenceKey()}):runpodClient.health(cloud)));
       }
       if (route === '/api/recordings/search' && req.method === 'POST') {
         const input = await body(req); return send(res, 200, await recordingSource.search(input.query));
@@ -361,6 +376,11 @@ export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, c
       }
       if (route === '/api/songs' && req.method === 'POST') {
         const input=await body(req),params = {...validateSong(input),projectId:projects.validProject(input.projectId)};
+        if(params.lyricSource && !lyricsWorkspace.has(params.lyricSource)) fail('The source lyric draft no longer exists.');
+        if(params.scoreSource && params.scoreSource !== 'custom') {
+          const [kind,id] = params.scoreSource.split(':');
+          if(!(kind === 'song' ? db.songs : db.transcriptions).some(s => s.id === id)) fail('The source score no longer exists.');
+        }
         if(params.execution==='runpod'){
           if(!cloudView().configured)fail('Connect your RunPod worker in Engine settings first.',503);
         }else{const runtime = ready();if (!runtime.ready) fail(`Engine setup required: ${runtime.missing.join(', ')}`, 503);}
@@ -432,7 +452,7 @@ export function createStudio({ root = ROOT, spawnRunner = spawn, checkRuntime, c
       }
       if (route.startsWith('/api/')) fail('Endpoint not found.', 404);
       if (!['GET', 'HEAD'].includes(req.method)) fail('Method not allowed.', 405);
-      const publicFiles = { '/': 'index.html', '/app.js': 'app.js', '/mastering.js': 'mastering.js', '/videos.js': 'videos.js', '/lyrics.js': 'lyrics.js', '/sheet.js': 'sheet.js', '/microphone.js': 'microphone.js', '/finder.js': 'finder.js', '/composition-score.js': 'composition-score.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg' };
+      const publicFiles = { '/': 'index.html', '/app.js': 'app.js', '/mastering.js': 'mastering.js', '/videos.js': 'videos.js', '/lyrics.js': 'lyrics.js', '/assets.js': 'assets.js', '/runpod.js': 'runpod.js', '/sheet.js': 'sheet.js', '/microphone.js': 'microphone.js', '/finder.js': 'finder.js', '/composition-score.js': 'composition-score.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg' };
       if (route === '/abcjs.js') return serveFile(req, res, path.join(root, 'node_modules', 'abcjs', 'dist', 'abcjs-basic-min.js'));
       if (route === '/abcjs_basic.LICENSE') return serveFile(req, res, path.join(root, 'node_modules', 'abcjs', 'dist', 'abcjs-basic-min.js.LICENSE'), true);
       if (!publicFiles[route]) fail('Page not found.', 404);

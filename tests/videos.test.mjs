@@ -113,3 +113,25 @@ test('RunPod uses the published MiniMax H3 SGLang protocol and fal media rejects
   const unsafe=createVideoProviders({fetcher:async url=>{if(url.endsWith('/status'))return Response.json({status:'COMPLETED'});if(url.endsWith('/response'))return Response.json({video:{url:'https://v3.fal.media/clip.mp4'}});return new Response('',{status:302,headers:{location:'http://127.0.0.1/private'}});}});
   await assert.rejects(unsafe.waitAndDownload({falKey:'secret'},'fal',{statusURL:'https://queue.fal.run/m/status',resultURL:'https://queue.fal.run/m/response'},path.join(temp,'bad.mp4'),{signal:new AbortController().signal}),/unrecognized/);assert.equal(existsSync(path.join(temp,'bad.mp4')),false);
 });
+
+test('serverless submits once, downloads bounded MP4 output, and cancels through fixed RunPod queue host',async t=>{
+  const temp=setup(t),fixture=media(temp),requests=[],bytes=readFileSync(fixture.clip);
+  const config={runpodMode:'serverless',endpointId:'endpoint1',serverlessKey:'private-account-key'};
+  const provider=createVideoProviders({pollMs:1,fetcher:async(url,options)=>{
+    requests.push({url,options});
+    if(url.endsWith('/run'))return Response.json({id:'job_1',status:'IN_QUEUE'});
+    if(url.endsWith('/status/job_1'))return Response.json({status:'COMPLETED',output:{videoBase64:bytes.toString('base64')}});
+    return Response.json({status:'CANCELLED'});
+  }});
+  const job={provider:'runpod',clipSeconds:10,ratio:'16:9',seed:1234},signal=new AbortController().signal;
+  const remote=await provider.submit(config,VIDEO_MODELS[5],job,'A cinematic garden.',0,signal);
+  assert.deepEqual(remote,{id:'job_1',endpointId:'endpoint1'});
+  const output=path.join(temp,'queue.mp4');await provider.waitAndDownload(config,'runpod',remote,output,{signal});
+  assert.deepEqual(readFileSync(output),bytes);await provider.cancel(config,'runpod',remote);
+  assert.equal(requests.filter(r=>r.url.endsWith('/run')).length,1);
+  assert.ok(requests.every(r=>new URL(r.url).hostname==='api.runpod.ai'&&r.options.headers.Authorization==='Bearer private-account-key'));
+  assert.match(JSON.parse(requests[0].options.body).input.prompt,/integrated_multimodal_description: A cinematic garden/);
+  const unsafe=createVideoProviders({fetcher:async()=>Response.json({status:'COMPLETED',output:{videoBase64:Buffer.from('not a video').toString('base64')}})});
+  const bad=path.join(temp,'invalid.mp4');await assert.rejects(unsafe.waitAndDownload(config,'runpod',remote,bad,{signal}),/not an MP4/);
+  assert.equal(existsSync(bad),false);
+});

@@ -30,6 +30,7 @@ export function renderVideoJobs(container,jobs,models,{gallery=false,projects=[]
     const error=card.querySelector('[data-job-error]');error.hidden=!job.error;error.textContent=job.error??'';
     const actions=card.querySelector('[data-job-actions]');let markup=['queued','running'].includes(job.status)?`<button type="button" class="secondary" data-video-cancel="${job.id}">Cancel video</button>`:['failed','interrupted'].includes(job.status)&&!(job.clips??[]).some(clip=>clip?.submissionUnknown)?`<button type="button" class="secondary" data-video-resume="${job.id}">Resume saved scenes ↗</button>`:'';
     if(gallery){if(job.deletedAt)markup=`<button type="button" class="secondary" data-video-restore="${job.id}">Restore video ↗</button>`;else {markup+=`<button type="button" class="secondary" data-video-song="${job.songId}">Create another video ↗</button>`;if(!['queued','running'].includes(job.status))markup+=`<button type="button" class="text-button video-delete-button" data-video-delete="${job.id}">Delete video</button>`;}if(!job.hasVideo&&media.dataset.placeholder!=='true'){media.dataset.placeholder='true';media.innerHTML='<div class="video-pending-thumbnail" aria-hidden="true">▷</div>';}}
+    markup+=`<button type="button" class="secondary related-button" data-related="video:${job.id}" aria-label="Related assets for ${escape(job.title)}">&#8984; Related assets</button>`;
     if(actions.dataset.markup!==markup){actions.dataset.markup=markup;actions.innerHTML=markup;}
     if(gallery&&!job.deletedAt){
       const target=card.querySelector('[data-job-project]'),current=job.projectId??'follow';
@@ -87,6 +88,7 @@ export function setupVideos({ getStudio, api, refresh, toast, showPage }) {
     if(signature===masterSignature&&preferred===undefined)return;masterSignature=signature;
     fillSelect('video-master',[{value:'',label:'Original recording'},...jobs.map(j=>({value:j.id,label:`${j.preset[0].toUpperCase()+j.preset.slice(1)} master`}))],preferred);
   }
+  let videoConnectionSignature='',videoEndpointSignature='';
   function connectionStatus(){
     if(!state())return;const connection=state().connection;
     $('fal-billing-status').textContent=connection.billingConfigured?'✓ Admin key saved':'Optional · no admin key';
@@ -96,10 +98,24 @@ export function setupVideos({ getStudio, api, refresh, toast, showPage }) {
     renderBalance();
     if(!connection.billingConfigured){balanceRequested=false;balanceError='';}
     else if(!balanceRequested){balanceRequested=true;void refreshBalance();}
-    $('video-pod-status').textContent=connection.podConfigured?'RunPod video connection saved.':'No RunPod video service connected.';
+    const currentConnection=JSON.stringify([connection.runpodMode,connection.endpointId]);
+    if(currentConnection!==videoConnectionSignature){videoConnectionSignature=currentConnection;$('video-runpod-mode').value=connection.runpodMode??'serverless';$('video-endpoint-id').value=connection.endpointId??'';videoRunpodFields();}
+    const engines=(getStudio().runpodManagement?.managedEndpoints??[]).filter(e=>e.workload!=='yue2-serverless');
+    const engineSignature=JSON.stringify([engines,connection.endpointId]);
+    if(engineSignature!==videoEndpointSignature){
+      videoEndpointSignature=engineSignature;
+      const preferred=$('video-endpoint-choice').value||connection.endpointId||'';
+      const options=[{value:'',label:engines.length?'Choose a video engine…':'Set up a video engine first…'},...engines.map(e=>({value:e.id,label:e.name+' · up to '+e.maxWorkers+' workers'}))];
+      if(connection.endpointId&&!engines.some(e=>e.id===connection.endpointId))options.push({value:connection.endpointId,label:'Saved video engine'});
+      options.push({value:'__manual__',label:'Advanced · enter an endpoint ID'});
+      fillSelect('video-endpoint-choice',options,preferred);
+      $('video-endpoint-help').textContent=engines.length?'Choose an engine by name. Your saved RunPod account key is used automatically.':'Click “Set up a video engine” to connect your account, prepare model storage, and configure MiniMax H3 serverless. Setup uses zero idle workers and saves the connection automatically.';
+      videoRunpodFields();
+    }
+    $('video-pod-status').textContent=connection.podConfigured?(connection.runpodMode==='serverless'?'Serverless endpoint saved · workers start for requests.':'Dedicated Pod connection saved.'):'No RunPod video engine configured.';
     const connected=provider()==='fal'?connection.falConfigured:connection.podConfigured;
     $('video-connection-note').hidden=connected;
-    $('video-generate').disabled=busy||!planned||planned.signature!==JSON.stringify(draft())||!connected||state().jobs.some(job=>['queued','running'].includes(job.status));
+    $('video-generate').disabled=busy||!planned||planned.signature!==JSON.stringify(draft())||!connected||(connection.runpodMode==='serverless'&&provider()==='runpod'?state().jobs.filter(job=>['queued','running'].includes(job.status)).length>=2||state().jobs.some(job=>['queued','running'].includes(job.status)&&job.provider!=='runpod'):state().jobs.some(job=>['queued','running'].includes(job.status)));
     $('video-plan-button').disabled=busy||!$('video-song').value;
   }
   function invalidate(){planned=null;$('video-plan').hidden=true;connectionStatus();clearTimeout(savingTimer);savingTimer=setTimeout(()=>api('/api/videos/draft','PUT',draft()).catch(()=>{}),700);}
@@ -194,9 +210,23 @@ export function setupVideos({ getStudio, api, refresh, toast, showPage }) {
       if(button.dataset.videoResume){await api(`/api/videos/${button.dataset.videoResume}/resume`,'POST',{});await refresh();}
     }catch(error){toast(error.message);}
   });
+  function videoRunpodFields(){
+    const queue=$('video-runpod-mode').value==='serverless',manual=$('video-endpoint-choice').value==='__manual__';
+    $('video-endpoint-field').hidden=!queue;$('video-dedicated-fields').hidden=queue;
+    $('video-pod-url').required=!queue;$('video-endpoint-choice').required=queue;
+    $('video-endpoint-id').required=queue&&manual;$('video-endpoint-manual').hidden=!manual;
+    if(manual)$('video-endpoint-manual').open=true;
+  }
+  $('video-endpoint-choice').addEventListener('change',videoRunpodFields);
+  $('video-endpoint-refresh').addEventListener('click',async()=>{
+    const button=$('video-endpoint-refresh');button.disabled=true;
+    try{await api('/api/runpod/manage/refresh','POST',{});await refresh();toast('RunPod video engines refreshed');}
+    catch(error){toast(error.message);}finally{button.disabled=false;}
+  });
+  $('video-runpod-mode').addEventListener('change',videoRunpodFields);
   for(const [id,kind] of [['video-fal-form','fal'],['video-pod-form','runpod']])$(id).addEventListener('submit',async event=>{
     event.preventDefault();const button=event.submitter;button.disabled=true;$('video-settings-error').hidden=true;
-    try{await api('/api/videos/connection','PUT',kind==='fal'?{falKey:$('video-fal-key').value}:{podURL:$('video-pod-url').value,podToken:$('video-pod-token').value});$('video-fal-key').value='';$('video-pod-token').value='';await refresh();toast('Video connection saved');}
+    try{await api('/api/videos/connection','PUT',kind==='fal'?{falKey:$('video-fal-key').value}:($('video-runpod-mode').value==='serverless'?{runpodMode:'serverless',endpointId:$('video-endpoint-choice').value==='__manual__'?$('video-endpoint-id').value:$('video-endpoint-choice').value}:{runpodMode:'pod',podURL:$('video-pod-url').value,podToken:$('video-pod-token').value}));$('video-fal-key').value='';$('video-pod-token').value='';await refresh();toast('Video connection saved');}
     catch(error){$('video-settings-error').textContent=error.message;$('video-settings-error').hidden=false;}
     finally{button.disabled=false;}
   });

@@ -1,15 +1,44 @@
+import { lyricUsage, buildAssetGraph } from './assets.js';
 const $ = id => document.getElementById(id);
 const escape = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const LOCAL = 'yue2-lyrics-workspace';
 
-export function setupLyrics({ api, toast, useLyrics, getComposer }) {
+export function setupLyrics({ api, toast, useLyrics, getComposer, getStudio, showPage }) {
   let initialized = false, session = null, sessions = [], models = [], configured = false, dirty = false, busy = false, initializing;
   const snapshot = () => ({ id: session?.id ?? null, title: $('lyric-title').value, lyrics: $('lyric-draft').value, model: $('lyric-model').value, prompt: $('lyric-message').value });
   function remember() { try { localStorage.setItem(LOCAL, JSON.stringify(snapshot())); } catch {} }
   function error(message = '') {
     for (const id of ['lyric-error', 'openrouter-error']) { $(id).textContent = message; $(id).hidden = !message; }
   }
+  let librarySignature = '';
+  function renderLibrary() {
+    if($('page-lyric-library').hidden) return;
+    const state = getStudio() ?? {}, saved = state.lyricSessions ?? sessions;
+    const query=$('lyric-library-search').value.trim().toLowerCase(), filter=$('lyric-library-status').value;
+    const graph=buildAssetGraph(state);
+    const rows=saved.map(draft=>({...draft,used:lyricUsage(state,draft.id,graph)})).filter(draft=>(draft.title+' '+draft.lyrics).toLowerCase().includes(query)&&(filter==='all'||(filter==='used')===Boolean(draft.used.length)));
+    $('lyric-library-count').textContent=`${rows.length} lyric draft${rows.length===1?'':'s'}`;
+    const signature=JSON.stringify(rows);if(signature===librarySignature)return;librarySignature=signature;
+    $('lyric-library-grid').innerHTML=rows.length?rows.map(draft=>`<article class="song-card lyric-library-card"><span class="status-badge ${draft.used.length?'completed':''}">${draft.used.length?'Used in '+draft.used.length+' song'+(draft.used.length===1?'':'s'):'Draft'}</span><h3>${escape(draft.title)}</h3><p class="lyric-excerpt">${escape(draft.lyrics?.slice(0,320)||'No lyrics yet. Open this draft to start writing.')}</p><div class="song-actions"><button class="secondary" type="button" data-lyric-open="${draft.id}">Edit lyrics</button><button class="secondary" type="button" data-lyric-compose="${draft.id}" ${draft.lyrics?.trim()?'':'disabled'}>Create a song</button><button class="secondary related-button" type="button" data-related="lyrics:${draft.id}">&#8984; Related assets</button></div><p class="field-help">Updated ${escape(new Date(draft.updatedAt).toLocaleDateString())}</p></article>`).join(''):`<div class="empty-library"><h3>${saved.length?'No matching lyrics.':'No lyrics here yet.'}</h3><p>Create a new draft, or try a different search or filter.</p></div>`;
+  }
+  async function openDraft(id) {
+    await open();
+    await action(async()=>{if(dirty)await save();load(await api(`/api/lyrics/${id}`));showPage('lyrics');});
+  }
+  async function newDraft() {
+    await open();await action(async()=>{if(dirty)await save();const model=$('lyric-model').value;load(null,{title:'',lyrics:'',model,prompt:''});showPage('lyrics');$('lyric-title').focus();});
+  }
+  $('lyric-library-search').addEventListener('input',renderLibrary);
+  $('lyric-library-status').addEventListener('change',renderLibrary);
+  document.addEventListener('click',async event=>{
+    const button=event.target.closest('[data-lyric-new],[data-lyric-open],[data-lyric-compose]');if(!button)return;
+    if(button.hasAttribute('data-lyric-new'))await newDraft();
+    else if(button.dataset.lyricOpen)await openDraft(button.dataset.lyricOpen);
+    else {await open();await action(async()=>{if(dirty)await save();const value=await api(`/api/lyrics/${button.dataset.lyricCompose}`);useLyrics(value);});}
+  });
   function status() {
+    $('lyric-related').hidden=!session?.id;
+    if(session?.id)$('lyric-related').dataset.related=`lyrics:${session.id}`;
     $('lyric-save-status').textContent = busy ? 'Working…' : dirty ? 'Unsaved changes · kept in this browser' : session ? 'Draft saved on this computer' : 'Start a conversation or write your own draft';
     $('openrouter-status').textContent = configured ? 'Your API key is saved on this computer. Choose a writing model below, then open Write lyrics.' : 'No API key saved. Add your OpenRouter API key to start chatting.';
     $('openrouter-status').classList.toggle('saved', configured);
@@ -72,7 +101,7 @@ export function setupLyrics({ api, toast, useLyrics, getComposer }) {
     const value = snapshot();
     session = await api(session ? `/api/lyrics/${session.id}` : '/api/lyrics', session ? 'PUT' : 'POST', { title:value.title, lyrics:value.lyrics, model:value.model });
     $('lyric-title').value = session.title;
-    sessions = [{ id:session.id, title:session.title, model:session.model, updatedAt:session.updatedAt }, ...sessions.filter(s => s.id !== session.id)];
+    sessions = [{ id:session.id, title:session.title, model:session.model, lyrics:session.lyrics, updatedAt:session.updatedAt }, ...sessions.filter(s => s.id !== session.id)];
     dirty = false; list(); remember(); status(); return session;
   }
   async function action(work) {
@@ -96,8 +125,8 @@ export function setupLyrics({ api, toast, useLyrics, getComposer }) {
   $('lyric-message').addEventListener('input', remember);
   $('lyric-model-refresh').addEventListener('click', () => action(catalog));
   $('lyric-save').addEventListener('click', () => action(async () => { await save(); toast('Lyrics and conversation saved'); }));
-  $('lyric-use').addEventListener('click', () => action(async () => { await save(); useLyrics({title:session.title,lyrics:session.lyrics}); }));
-  $('lyric-new').addEventListener('click', () => action(async () => { if (dirty) await save(); const model = $('lyric-model').value; load(null, { title:'',lyrics:'',model,prompt:'' }); $('lyric-title').focus(); }));
+  $('lyric-use').addEventListener('click', () => action(async () => { await save(); useLyrics(session); }));
+  $('lyric-new').addEventListener('click', newDraft);
   async function importComposer() {
     await open();
     await action(async () => { if (dirty) await save(); const value = getComposer(); load(null, {title:value.title,lyrics:value.lyrics,model:$('lyric-model').value,prompt:''}); toast('Composer lyrics loaded into a new writing draft'); });
@@ -132,5 +161,5 @@ export function setupLyrics({ api, toast, useLyrics, getComposer }) {
     action(async () => { const result = await api('/api/openrouter/connection','PUT',{key}); configured = result.configured; $('openrouter-key').value = ''; toast('OpenRouter key saved locally'); await catalog(); });
   });
   $('openrouter-disconnect').addEventListener('click', () => action(async () => { await api('/api/openrouter/connection','DELETE'); configured = false; $('openrouter-key').value=''; toast('OpenRouter disconnected'); }));
-  return { open, importComposer };
+  return { open, importComposer, renderLibrary, openDraft };
 }

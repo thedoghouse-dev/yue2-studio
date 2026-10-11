@@ -1,3 +1,5 @@
+import { setupRunpod } from './runpod.js';
+import { setupAssetConnections } from './assets.js';
 import { setupVideos, videoProject } from './videos.js';
 import { setupMastering } from './mastering.js';
 import { setupSheetMusic } from './sheet.js';
@@ -32,7 +34,8 @@ window.addEventListener('storage', event => {
 });
 
 const escape = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-let studio = null, selected = null, page = 'create', pollBusy = false, dirty = false, saveTimer, toastTimer, loading = false;
+let lyricSource = '';
+let studio = null, selected = null, preparingSong = false, page = 'create', pollBusy = false, dirty = false, saveTimer, toastTimer, loading = false;
 const selectedSongs=new Set();let visibleSongs=[],projectSignature='';
 const projectName=id=>studio?.projects?.find(project=>project.id===id)?.name??'Unassigned';
 function projectOptions(current='',includeAll=false){return `${includeAll?'<option value="all">All projects</option>':''}<option value="" ${current===''?'selected':''}>Unassigned</option>${(studio?.projects??[]).map(project=>`<option value="${project.id}" ${project.id===current?'selected':''}>${escape(project.name)}</option>`).join('')}`;}
@@ -68,6 +71,7 @@ const presets = {
   punk: 'English, punk rock, raw energetic lead vocal, fast driving drums, distorted power-chord guitars, punchy bass, short catchy choruses, rebellious spirit, direct live-band energy',
   synthwave: 'English, synthwave, emotive melodic lead vocal, shimmering analog synths, pulsing arpeggios, warm synth bass, gated electronic drums, nostalgic night-drive atmosphere, cinematic chorus',
   latinpop: 'English, Latin pop, bright expressive lead vocal, syncopated Latin percussion, nylon-string guitar, warm bass, catchy piano melody, joyful danceable rhythm, polished pop chorus',
+  arena: 'Instrumental, sports arena entrance anthem, cinematic orchestral rock, triumphant staccato brass fanfare, soaring French horns, pounding taiko drums, deep kick and snare, stadium claps and stomps, driving electric guitar riffs, powerful bass, 90 BPM, dramatic rising build, explosive main theme, bold heroic energy, big final hit, no singing',
   cinematic: 'English, cinematic orchestral ballad, expressive soaring lead vocal, piano, sweeping strings, warm brass, orchestral percussion, gradual emotional build, spacious dramatic arrangement',
 };
 const sample = { title: 'After the rain', style: presets.folk, lyrics: '[Verse]\nThe porch light flickers in the rain\nYour old coat hangs here just the same\nI put the kettle on at dawn\nAnd hum the tune you left me on\n\n[Chorus]\nAfter the rain, the road turns gold\nThere is a warmth the sky can hold\nI leave the door a little wide\nFor all the days still waiting outside\n\n[Outro]\nThe clouds move on, the windows shine\nA little light, a little time', mode: 'full', seed: 1234, maxTokens: 3000, steps: 8, temperature: 1, abc: '' };
@@ -78,10 +82,11 @@ async function api(url, method = 'GET', data) {
   const result = await res.json(); if (!res.ok) throw new Error(result.error ?? 'Request failed'); return result;
 }
 function draft() {
-  return { title: $('title').value, projectId:$('song-project').value, style: $('style').value, lyrics: $('lyrics').value, mode: document.querySelector('input[name="mode"]:checked').value,
+  return { lyricSource, title: $('title').value, projectId:$('song-project').value, style: $('style').value, lyrics: $('lyrics').value, mode: document.querySelector('input[name="mode"]:checked').value,
     seed: Number($('seed').value), durationSeconds: $('duration-auto').checked ? null : Number($('durationSeconds').value), durationMode:$('durationMode').value,scoreUse:$('scoreUse').value,maxTokens: Number($('maxTokens').value), steps: Number($('steps').value), temperature: Number($('temperature').value), abc: $('abc').value, scoreSource: compositionScore.source(), execution: $('execution').value };
 }
 function loadDraft(value) {
+  if ('lyrics' in value) lyricSource = value.lyricSource ?? '';
   if('projectId' in value||'lyrics' in value)$('song-project').value=value.projectId??'';
   if('lyrics' in value||'durationMode' in value)$('durationMode').value=value.durationMode??'target';
   if('lyrics' in value||'scoreUse' in value)$('scoreUse').value=value.scoreUse??'follow';
@@ -97,6 +102,14 @@ function loadDraft(value) {
   compositionScore.load(value);
   counts();
 }
+function clearForNewSong(projectId='') {
+  loadDraft({ ...sample, title: '', style: '', lyrics: '', abc: '', lyricSource: '', scoreSource: '', projectId,
+    durationSeconds: null, durationMode: 'target', scoreUse: 'follow', execution: $('execution').value });
+  $('form-error').hidden = true;
+  markDirty();
+  $('title').focus();
+  toast('Cleared for a new song. Engine selection kept.');
+}
 function counts() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
   $('mode-help').textContent = {
@@ -105,6 +118,7 @@ function counts() {
     off: 'Direct audio generates sound from your description and lyrics without an intermediate score plan. It cannot use supplied sheet music.',
   }[mode];
   $('lyrics-count').textContent = `${$('lyrics').value.length.toLocaleString()} characters`;
+  $('lyrics-guidance').textContent = $('lyrics').value.trim() ? 'Use section tags for vocals.' : mode === 'off' ? 'Instrumental requested. Direct audio can still produce vocals; it has no editable score to control the vocal part.' : 'Instrumental requested. Review the generated score; blank lyrics do not guarantee a vocal-free recording.';
   $('temperature-value').textContent = Number($('temperature').value).toFixed(1);
   const automatic = $('duration-auto').checked, seconds = Number($('durationSeconds').value);
   const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
@@ -121,6 +135,7 @@ function counts() {
     : 'Choose 10–360 seconds. Target length prevents early stopping until about two seconds before the limit. Maximum only allows shorter songs. Reaching the limit can cut off an ending, and continuing a short score may repeat musical material.';
 }
 function markDirty() {
+  preparingSong = true; selected = null; if (studio) renderRoom();
   dirty = true; counts(); $('save-status').textContent = 'Saving draft…';
   clearTimeout(saveTimer); saveTimer = setTimeout(saveDraft, 700);
   try { localStorage.setItem('yue2-draft', JSON.stringify(draft())); } catch { /* server remains the source of persistence */ }
@@ -135,13 +150,15 @@ function showPage(name) {
   if (page === 'sheet' && name !== 'sheet') sheetMusic.leave();
   page = name;
   for (const section of document.querySelectorAll('.page')) section.hidden = section.id !== `page-${name}`;
-  for (const button of document.querySelectorAll('[data-page]')) button.classList.toggle('active', button.dataset.page === name || (name === 'videos' && button.dataset.page === 'video-library'));
-  $('breadcrumb').textContent = { create: 'Create a song', projects:'Projects', lyrics: 'Write lyrics', library: 'Song library', sheet: 'Sheet music', finder: 'Find a song', 'video-library':'Video library', videos: 'Create a music video', engine: 'Engine settings' }[name];
-  if (name === 'lyrics' || name === 'engine') lyricsWorkspace.open().catch(error => toast(error.message));
+  for (const button of document.querySelectorAll('[data-page]')) button.classList.toggle('active', button.dataset.page === name || (name === 'videos' && button.dataset.page === 'video-library') || (name === 'sheet' && button.dataset.page === 'sheet-library') || (name === 'lyrics' && button.dataset.page === 'lyric-library'));
+  $('breadcrumb').textContent = { create: 'Create a song', projects:'Projects', lyrics: 'Write lyrics', 'lyric-library':'Lyrics library', library: 'Song library', sheet: 'Create or view sheet music', 'sheet-library':'Sheet music library', finder: 'Find a song', 'video-library':'Video library', videos: 'Create a music video', runpod:'RunPod · advanced · experimental', advice:'Advice', engine: 'Engine settings' }[name];
+  if (name === 'lyric-library') lyricsWorkspace.renderLibrary();
+  if (name === 'lyrics' || name === 'engine') lyricsWorkspace.open().then(() => lyricsWorkspace.renderLibrary()).catch(error => toast(error.message));
+  if (name === 'runpod') runpodWorkspace.open();
   if (name === 'finder') finder.render();
   if (name === 'library') renderLibrary();
   if (name === 'video-library' || name === 'videos') videoWorkspace.render();
-  if (name === 'sheet') sheetMusic.render();
+  if (name === 'sheet' || name === 'sheet-library') sheetMusic.render();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 function badge(song) { return `<span class="status-badge ${escape(song.status)}">${escape({ completed: 'Ready to listen', running: 'Generating', queued: 'Queued', failed: 'Needs attention', interrupted: 'Interrupted', cancelled: 'Cancelled' }[song.status])}</span>`; }
@@ -153,7 +170,7 @@ function elapsed(song) {
 const link = (song, type) => `/api/songs/${song.id}/${type}`;
 function actions(song) {
   if(song.deletedAt)return `<div class="song-actions"><button class="secondary" type="button" data-song-restore="${song.id}">Restore song ↗</button></div>`;
-  return `<div class="song-actions">${song.hasAudio ? `<button class="secondary" type="button" data-video-song="${song.id}">Create music video</button><button class="secondary" type="button" data-master="${song.id}">Master this song</button><a class="secondary" href="${link(song, 'audio')}?download">Download WAV ↓</a>` : ''}${['running', 'queued'].includes(song.status) ? `<button class="secondary" type="button" data-cancel="${song.id}">Cancel</button>` : ''}<button class="secondary" type="button" data-detail="${song.id}">Details ↗</button><button class="text-button video-delete-button" type="button" data-song-delete="${song.id}">${song.deletionBlockers?.length?'Why deletion is blocked':'Delete song'}</button></div>`;
+  return `<div class="song-actions">${song.hasAudio ? `<button class="secondary" type="button" data-video-song="${song.id}">Create music video</button><button class="secondary" type="button" data-master="${song.id}">Master this song</button><a class="secondary" href="${link(song, 'audio')}?download">Download WAV ↓</a>` : ''}${['running', 'queued'].includes(song.status) ? `<button class="secondary" type="button" data-cancel="${song.id}">Cancel</button>` : ''}<button class="secondary related-button" type="button" data-related="song:${song.id}" aria-label="Related assets for ${escape(song.title)}">&#8984; Related assets</button><button class="secondary" type="button" data-detail="${song.id}">Details ↗</button><button class="text-button video-delete-button" type="button" data-song-delete="${song.id}">${song.deletionBlockers?.length?'Why deletion is blocked':'Delete song'}</button></div>`;
 }
 function renderEngine() {
   const ready = studio.runtime.ready;
@@ -171,14 +188,16 @@ function renderEngine() {
   $('engine-status').innerHTML = ready ? '<span class="status-badge">Runtime and models installed</span>' : `<span class="status-badge failed">Missing engine files</span><ul>${studio.runtime.missing.map(x => `<li>${escape(x)}</li>`).join('')}</ul>`;
   $('generate').disabled = !generationReady || loading || compositionScore.pending();
   $('generate').title = remote ? (generationReady?'Generate with your paid RunPod worker':'Connect RunPod in Engine settings first') : (ready?'Generate with YuE2 on your computer':'Finish engine setup first');
-  $('execution-note').textContent=remote?'BF16 weights + F32 decoder. Lyrics, style and sheet music are sent to your RunPod worker. RunPod charges while the pod runs; stop or terminate it when finished. Higher precision may help quality, but does not guarantee correct lyrics.':'Runs on your computer using the precision selected in Engine settings. Your lyrics and sheet music stay local.';
+  $('execution-note').textContent=remote?(studio.runpod?.mode==='serverless'?'On-demand RunPod GPU · BF16 + F32 decoder. Workers scale to zero after requests. First-use setup, generation, and recording transfer are billed; network storage is billed separately. Lyrics and sheet music are sent to your selected song endpoint.':'BF16 weights + F32 decoder. Lyrics, style and sheet music are sent to your RunPod worker. RunPod charges while the pod runs; stop or terminate it when finished. Higher precision may help quality, but does not guarantee correct lyrics.'):'Runs on your computer using the precision selected in Engine settings. Your lyrics and sheet music stay local.';
   $('generation-location').textContent=remote?'Generated on RunPod · paid GPU. Audio is downloaded into this library.':'Generated on your computer. Lyrics and drafts stay local.';
-  $('runpod-connection-status').textContent=studio.runpod?.configured?'Worker connection saved. Check the worker before generating.':'No RunPod worker connected.';
+  $('runpod-connection-status').textContent=studio.runpod?.configured?(studio.runpod.mode==='serverless'?'Serverless song engine selected. Workers start when you create a song.':'Worker connection saved. Check the worker before generating.'):'No RunPod worker connected.';
 }
 function renderRoom() {
   const songs = studio.songs;
-  const song = songs.find(s => s.id === selected) ?? songs.find(s => ['running', 'queued'].includes(s.status)) ?? songs[0];
+  const song = preparingSong ? null : songs.find(s => s.id === selected) ?? songs.find(s => ['running', 'queued'].includes(s.status));
   if (!song) {
+    if ($('listening-room').dataset.signature === 'empty') return;
+    $('listening-room').dataset.signature = 'empty';
     $('listening-room').innerHTML = '<div class="empty-room"><div class="vinyl"><span class="vinyl-label"></span></div><h3>A space for your sound.</h3><p>Your next song will be right here.<br>Press generate when the idea feels right.</p></div><div class="room-divider"></div><div class="room-meta"><span>READY WHEN YOU ARE</span><span>STEREO / WAV</span></div>';
     return;
   }
@@ -210,8 +229,8 @@ function renderLibrary(force = false) {
   $('library-songs').innerHTML = songs.length ? songs.map(song => `<article class="song-card"><div class="card-art" aria-hidden="true">${Array.from({ length: 28 }, (_, i) => `<i></i>`).join('')}</div>${inTrash?'':`<label class="song-select"><input type="checkbox" data-song-select="${song.id}" ${selectedSongs.has(song.id)?'checked':''} aria-label="Select ${escape(song.title)}">Select song</label>`}${song.deletedAt?'<span class="status-badge">In Trash</span>':badge(song)}<span class="project-label">${escape(projectName(song.projectId))}</span><h3>${escape(song.title)}</h3><p>${escape(song.style)}</p>${song.hasAudio ? `<audio controls preload="none" src="${link(song, 'audio')}"></audio>` : `<p>${escape(song.stage)}</p>`}${actions(song)}<time>${new Date(song.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time></article>`).join('') : `<div class="empty-library"><h3>${studio.songs.length ? 'No matching tracks.' : 'Your first track is waiting to happen.'}</h3><p>${studio.songs.length ? 'Try another search or filter.' : 'Create a song and it will be saved here, with its lyrics and settings.'}</p><button type="button" class="secondary" data-page="create">Go to the song editor ↗</button></div>`;
 }
 async function detail(id) {
-  const song = studio.songs.find(s => s.id === id); if (!song) return;
-  $('song-detail').innerHTML = `${badge(song)}<h2>${escape(song.title)}</h2><p>${escape(song.style)}</p>${song.hasAudio ? `<audio controls preload="metadata" src="${link(song, 'audio')}"></audio>` : ''}${song.error ? `<p class="error-message">${escape(song.error)}</p>` : ''}<div class="song-actions"><button type="button" class="primary" data-reuse="${song.id}">Edit & create a new version ↗</button>${song.hasAudio ? `<button class="secondary" type="button" data-video-song="${song.id}">Create music video</button><button class="secondary" type="button" data-master="${song.id}">Master this song</button><a class="secondary" href="${link(song, 'audio')}?download">Download WAV ↓</a>` : ''}<a class="secondary" href="${link(song, 'request')}?download">Song settings ↓</a><a class="secondary" href="${link(song, 'lyrics')}?download">Lyrics ↓</a>${song.hasScore ? `<a class="secondary" href="${link(song, 'score')}?download">ABC score ↓</a>` : ''}${song.startedAt ? `<a class="secondary" href="${link(song, 'log')}" target="_blank">Generation log ↗</a>` : ''}</div><div class="field"><label for="detail-song-project">Project</label><select id="detail-song-project" data-song-project="${song.id}">${projectOptions(song.projectId??'')}</select><p class="field-help">Changes save automatically.</p></div><h4>LYRICS</h4><pre>${escape(song.lyrics)}</pre><p>${song.execution === 'runpod' ? 'RunPod' : 'Local'} · ${escape(song.modelPrecision ?? 'Q4')} · Seed ${song.seed} · ${song.mode} planning · ${song.maxTokens.toLocaleString()} token limit · ${song.steps} render steps</p>${song.hasScore ? '<h4>COMPOSITION SCORE</h4><pre id="score-preview">Loading score…</pre>' : ''}`;
+  const song = [...studio.songs,...(studio.songTrash??[])].find(s => s.id === id); if (!song) return;
+  $('song-detail').innerHTML = `${badge(song)}<h2>${escape(song.title)}</h2><p>${escape(song.style)}</p>${song.hasAudio ? `<audio controls preload="metadata" src="${link(song, 'audio')}"></audio>` : ''}${song.error ? `<p class="error-message">${escape(song.error)}</p>` : ''}<div class="song-actions"><button type="button" class="primary" data-reuse="${song.id}">Edit & create a new version ↗</button>${song.hasAudio ? `<button class="secondary" type="button" data-video-song="${song.id}">Create music video</button><button class="secondary" type="button" data-master="${song.id}">Master this song</button><a class="secondary" href="${link(song, 'audio')}?download">Download WAV ↓</a>` : ''}<button class="secondary related-button" type="button" data-related="song:${song.id}">&#8984; Related assets</button><a class="secondary" href="${link(song, 'request')}?download">Song settings ↓</a><a class="secondary" href="${link(song, 'lyrics')}?download">Lyrics ↓</a>${song.hasScore ? `<a class="secondary" href="${link(song, 'score')}?download">ABC score ↓</a>` : ''}${song.startedAt ? `<a class="secondary" href="${link(song, 'log')}" target="_blank">Generation log ↗</a>` : ''}</div><div class="field"><label for="detail-song-project">Project</label><select id="detail-song-project" data-song-project="${song.id}">${projectOptions(song.projectId??'')}</select><p class="field-help">Changes save automatically.</p></div><h4>LYRICS</h4><pre>${escape(song.lyrics)}</pre><p>${song.execution === 'runpod' ? 'RunPod' : 'Local'} · ${escape(song.modelPrecision ?? 'Q4')} · Seed ${song.seed} · ${song.mode} planning · ${song.maxTokens.toLocaleString()} token limit · ${song.steps} render steps</p>${song.hasScore ? '<h4>COMPOSITION SCORE</h4><pre id="score-preview">Loading score…</pre>' : ''}`;
   $('song-dialog').showModal();
   if (song.hasScore) {
     try { const res = await fetch(link(song, 'score')); if (!res.ok) throw new Error('Could not read the score'); const abc = await res.text(); if ($('score-preview')) $('score-preview').textContent = abc; }
@@ -230,7 +249,7 @@ async function refresh(initial = false) {
       $('runpod-url').value=studio.runpod?.url??'';
     }
     $('library-count').textContent = studio.songs.length;
-    videoWorkspace.render(); mastering.render(); compositionScore.render(); renderEngine(); renderRoom(); renderRecent(); sheetMusic.render(); finder.render(); if (page === 'library') renderLibrary();
+    runpodWorkspace.render(); videoWorkspace.render(); mastering.render(); compositionScore.render(); renderEngine(); renderRoom(); renderRecent(); sheetMusic.render(); lyricsWorkspace.renderLibrary(); finder.render(); if (page === 'library') renderLibrary();
     if (dirty) saveDraft();
   } catch {
     $('engine-pill').className = 'engine-pill'; $('engine-pill').innerHTML = '<i></i>App disconnected'; $('generate').disabled = true;
@@ -268,7 +287,7 @@ document.addEventListener('click', async event => {
       const label = `${pos && editor.value[pos - 1] !== '\n' ? '\n\n' : ''}[${button.dataset.section}]\n`;
       editor.setRangeText(label, editor.selectionStart, editor.selectionEnd, 'end'); markDirty();
     }
-    if (button.dataset.select) { selected = button.dataset.select; renderRoom(); }
+    if (button.dataset.select) { selected = button.dataset.select; preparingSong = false; renderRoom(); }
     if (button.dataset.master) mastering.open(button.dataset.master);
     if (button.dataset.detail) await detail(button.dataset.detail);
     if (button.dataset.cancel) { await api(`/api/songs/${button.dataset.cancel}/cancel`, 'POST', {}); await refresh(); toast('Generation cancelled'); }
@@ -285,14 +304,19 @@ $('song-form').addEventListener('submit', async event => {
   event.preventDefault(); if (loading || compositionScore.pending() || !($('execution').value==='runpod'?studio?.runpod?.configured:studio?.runtime.ready)) return;
   $('form-error').hidden = true; loading = true; renderEngine();
   try {
-    const song = await api('/api/songs', 'POST', draft()); selected = song.id; await saveDraft(); await refresh(); toast('Song added to the generation queue');
+    const song = await api('/api/songs', 'POST', draft()); selected = song.id; preparingSong = false; await saveDraft(); await refresh();
+    const progress = $('listening-room');
+    progress.focus({ preventScroll: true });
+    progress.closest('.listening-panel').scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
+    toast('Song added to the generation queue');
   } catch (error) { $('form-error').textContent = error.message; $('form-error').hidden = false; }
   finally { loading = false; renderEngine(); }
 });
+$('clear-song').addEventListener('click', () => clearForNewSong());
 $('sample').addEventListener('click', () => { loadDraft(sample); markDirty(); toast('Original example loaded'); });
 $('random-seed').addEventListener('click', () => { $('seed').value = crypto.getRandomValues(new Uint32Array(1))[0] % 2147483648; markDirty(); });
 $('all-songs').addEventListener('click', () => showPage('library'));
-$('new-song').addEventListener('click', () => { loadDraft({ ...sample, title: '', style: '', lyrics: '', abc: '',projectId:$('library-project').value==='all'?'':$('library-project').value }); markDirty(); showPage('create'); $('title').focus(); });
+$('new-song').addEventListener('click', () => { showPage('create'); clearForNewSong($('library-project').value==='all'?'':$('library-project').value); });
 $('search').addEventListener('input', () => renderLibrary());
 $('filter').addEventListener('change', () => renderLibrary());
 $('library-project').addEventListener('change',()=>{selectedSongs.clear();renderLibrary(true);});
@@ -323,7 +347,7 @@ $('runpod-form').addEventListener('submit',async event=>{
 });
 $('runpod-check').addEventListener('click',async()=>{
   $('runpod-check').disabled=true;$('runpod-error').hidden=true;$('runpod-health').textContent='Checking your RunPod worker…';
-  try{const health=await api('/api/runpod/check','POST',{});$('runpod-health').textContent=health.ready?'BF16 worker ready. You can generate songs on RunPod.':(health.error||health.stage);}catch(error){$('runpod-health').textContent='';$('runpod-error').textContent=error.message;$('runpod-error').hidden=false;}finally{$('runpod-check').disabled=false;}
+  try{const health=await api('/api/runpod/check','POST',{});$('runpod-health').textContent=studio.runpod?.mode==='serverless'?'Endpoint reachable. Workers will start when you create a song.':health.ready?'BF16 worker ready. You can generate songs on RunPod.':(health.error||health.stage);}catch(error){$('runpod-health').textContent='';$('runpod-error').textContent=error.message;$('runpod-error').hidden=false;}finally{$('runpod-check').disabled=false;}
 });
 $('runpod-disconnect').addEventListener('click',async()=>{
   $('runpod-disconnect').disabled=true;$('runpod-error').hidden=true;
@@ -331,11 +355,12 @@ $('runpod-disconnect').addEventListener('click',async()=>{
 });
 document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && page === 'create') { event.preventDefault(); $('song-form').requestSubmit(); } });
 document.addEventListener('play', event => { if (event.target.tagName === 'AUDIO') for (const audio of document.querySelectorAll('audio')) if (audio !== event.target) audio.pause(); }, true);
+const runpodWorkspace = setupRunpod({getStudio:()=>studio,api,refresh,toast,showPage});
 const sheetMusic = setupSheetMusic({ getStudio: () => studio, api, refresh, toast, loadDraft, markDirty, showPage });
 const finder = setupFinder({ getStudio: () => studio, api, refresh, toast, showPage, selectTranscription: id => sheetMusic.select(id) });
 const compositionScore = setupCompositionScore({ getStudio: () => studio, markDirty, renderEngine });
-const lyricsWorkspace = setupLyrics({ api, toast, getComposer: () => draft(), useLyrics: value => {
-  $('title').value = value.title; $('lyrics').value = value.lyrics;
+const lyricsWorkspace = setupLyrics({ api, toast, getStudio: () => studio, showPage, getComposer: () => draft(), useLyrics: value => {
+  lyricSource = value.id ?? ''; $('title').value = value.title; $('lyrics').value = value.lyrics;
   markDirty(); showPage('create'); toast('Lyrics loaded. Choose your sound and generate a song.');
 } });
 $('lyrics-partner').addEventListener('click', async () => {
@@ -347,3 +372,11 @@ const mastering = setupMastering({ getStudio: () => studio, api, toast, refresh 
 await refresh(true);
 setInterval(() => refresh(), 2000);
 
+
+setupAssetConnections({getStudio:()=>studio, api, toast, navigate:async node=>{
+  if($('song-dialog').open) $('song-dialog').close();
+  if(node.type==='lyrics') await lyricsWorkspace.openDraft(node.assetId);
+  else if(node.type==='sheet') {sheetMusic.select(node.assetId);showPage('sheet');}
+  else if(node.type==='song') await detail(node.assetId);
+  else if(node.type==='video') {$('video-library-status').value=node.trashed?'trash':'all';$('video-library-project').value='all';$('video-library-search').value='';showPage('video-library');const card=document.querySelector(`[data-video-job="${node.assetId}"]`);card?.scrollIntoView({behavior:'smooth',block:'center'});card?.classList.add('asset-highlight');setTimeout(()=>card?.classList.remove('asset-highlight'),2500);}
+}});

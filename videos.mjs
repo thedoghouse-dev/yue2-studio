@@ -44,18 +44,20 @@ export async function assembleVideo(executable,dir,job,source,signal){
     renameSync(temporary,path.join(dir,'video.mp4'));
   }finally{if(existsSync(temporary))unlinkSync(temporary);for(const file of normalized.map((_,i)=>path.join(dir,`scene-${i}-normalized.mp4`)))if(existsSync(file))unlinkSync(file);}
 }
-export function createVideos({data,executable,getSource,validProject=value=>value??'',providers=createVideoProviders()}){
+export function createVideos({onRunpodActivity=()=>{},data,executable,getSource,validProject=value=>value??'',providers=createVideoProviders(),getRunpodAccountKey=()=>''}){
   const dir=path.join(data,'videos');mkdirSync(dir,{recursive:true});
   const file=path.join(dir,'workspace.json'),keyFile=path.join(dir,'connection.json');
   const db=read(file,{draft:{provider:'fal',model:VIDEO_MODELS[0].id,scope:'preview',clipSeconds:10,resolution:'768P',ratio:'16:9',seed:1234,prompt:'',scenes:'',songId:'',masterId:''},jobs:[]});
   db.images??=[];const imagesDir=path.join(dir,'images');mkdirSync(imagesDir,{recursive:true});
   let config=read(keyFile,{falKey:'',podURL:'',podToken:''}),active=null,closing=false;
   for(const job of db.jobs)if(['running','queued'].includes(job.status)){job.status='interrupted';job.stage='Interrupted';job.error='The app stopped. Resume to keep completed scenes and continue existing provider requests.';}
+  config.runpodMode??=config.podURL?'pod':'serverless';
+  const concurrent=new Map();
   const save=()=>atomic(file,db);save();
   const jobDir=id=>path.join(dir,id);
   const thumbnails=new Map();
   const view=job=>({...job,elapsedSeconds:job.startedAt?Math.max(0,Math.round(((job.finishedAt?new Date(job.finishedAt).getTime():Date.now())-new Date(job.startedAt).getTime())/1000)):null,hasVideo:job.status==='completed'&&existsSync(path.join(jobDir(job.id),'video.mp4'))});
-  const state=()=>({models:VIDEO_MODELS,images:db.images.filter(i=>!i.archived),draft:db.draft,jobs:db.jobs.filter(j=>!j.deletedAt).map(view).reverse(),trash:db.jobs.filter(j=>j.deletedAt).map(view).reverse(),accountBilling:config.falBillingKey?db.accountBilling??null:null,connection:{falConfigured:Boolean(config.falKey),billingConfigured:Boolean(config.falBillingKey),podConfigured:Boolean(config.podURL&&config.podToken),podURL:config.podURL}});
+  const state=()=>({models:VIDEO_MODELS,images:db.images.filter(i=>!i.archived),draft:db.draft,jobs:db.jobs.filter(j=>!j.deletedAt).map(view).reverse(),trash:db.jobs.filter(j=>j.deletedAt).map(view).reverse(),accountBilling:config.falBillingKey?db.accountBilling??null:null,connection:{falConfigured:Boolean(config.falKey),billingConfigured:Boolean(config.falBillingKey),podConfigured:config.runpodMode==='serverless'?Boolean(config.endpointId&&getRunpodAccountKey()):Boolean(config.podURL&&config.podToken),runpodMode:config.runpodMode,endpointId:config.endpointId??'',podURL:config.podURL}});
   async function plan(input){
     if(!input||typeof input!=='object')fail('Choose a song and describe your video.');
     const model=VIDEO_MODELS.find(m=>m.id===input.model&&m.provider===input.provider);if(!model)fail('Choose a supported video model.');
@@ -82,30 +84,32 @@ export function createVideos({data,executable,getSource,validProject=value=>valu
     return {provider:input.provider,model:model.id,scope,songId:input.songId,masterId:input.masterId??'',title:source.title,prompt,scenes:scenes.join('\n\n'),clipSeconds:input.clipSeconds,resolution:model.resolutions.length?input.resolution:'',ratio:input.ratio,seed:input.seed,seconds,count,prompts,references};
   }
   function next(){
-    if(active||closing)return;const job=db.jobs.find(j=>j.status==='queued');if(!job)return;
-    const controller=new AbortController(),sessionConfig={...config};job.status='running';job.startedAt??=new Date().toISOString();save();
+    if(closing||active)return;const candidates=db.jobs.filter(j=>j.status==='queued');const job=concurrent.size?candidates.find(j=>j.provider==='runpod'&&(j.runpodMode??config.runpodMode)==='serverless'):candidates[0];if(!job||concurrent.size>=2)return;
+    const controller=new AbortController(),sessionConfig={...config,serverlessKey:getRunpodAccountKey()};const parallel=job.provider==='runpod'&&sessionConfig.runpodMode==='serverless';job.status='running';job.startedAt??=new Date().toISOString();save();
     const running=(async()=>{
       try{
         const source=getSource(job.songId,job.masterId),model=VIDEO_MODELS.find(m=>m.id===job.model),folder=jobDir(job.id);
-        for(let index=0;index<job.count;index++){
+        async function processScene(index){
           controller.signal.throwIfAborted();job.stage=`Scene ${index+1} of ${job.count}`;save();
-          const clip=path.join(folder,`scene-${index}.mp4`);if(job.clips[index]?.completed&&existsSync(clip))continue;
+          const clip=path.join(folder,`scene-${index}.mp4`);if(job.clips[index]?.completed&&existsSync(clip))return;
           job.clips[index]??={};const scene=job.clips[index];
           if(!scene.remote){
             if(scene.submissionUnknown)throw new Error('A scene submission had no acknowledgement. Check the provider request history before creating another video; it may already be billed.');
             const imageInputs=(job.references??[]).map(image=>`data:${image.mime};base64,${readFileSync(path.join(imagesDir,image.id+'.'+image.extension)).toString('base64')}`);
             scene.submittedAt??=new Date().toISOString();scene.submissionUnknown=true;save();
+            if(job.provider==='runpod')onRunpodActivity(sessionConfig);
             scene.remote=await providers.submit(sessionConfig,model,{...job,imageInputs},job.prompts[index],index,controller.signal);scene.submissionUnknown=false;save();
           }
           await providers.waitAndDownload(sessionConfig,job.provider,scene.remote,clip,{signal:controller.signal,onStatus:status=>{job.stage=`Scene ${index+1} of ${job.count} · ${status==='IN_QUEUE'||status==='queued'?'queued':'generating'}`;save();}});
           scene.completed=true;scene.finishedAt=new Date().toISOString();save();
         }
+        if(parallel){let cursor=0,failed=false;const lane=async()=>{while(cursor<job.count&&!failed){const index=cursor++;try{await processScene(index);}catch(error){failed=true;throw error;}}};const outcomes=await Promise.allSettled(Array.from({length:Math.min(5,job.count)},lane));const failure=outcomes.find(r=>r.status==='rejected');if(failure)throw failure.reason;}else for(let index=0;index<job.count;index++)await processScene(index);
         job.stage='Joining scenes with your soundtrack';save();
         await assembleVideo(executable,folder,job,source.file,controller.signal);
         job.status='completed';job.stage='Ready to watch';delete job.error;
       }catch(error){if(job.status!=='cancelled'){job.status=closing?'interrupted':'failed';job.stage=closing?'Interrupted':'Needs attention';job.error=error.message;}}
-      finally{job.finishedAt=new Date().toISOString();save();active=null;setImmediate(next);}
-    })();active={job,controller,running,config:sessionConfig};
+      finally{job.finishedAt=new Date().toISOString();save();if(parallel)concurrent.delete(job.id);else active=null;setImmediate(next);}
+    })();const task={job,controller,running,config:sessionConfig};if(parallel){concurrent.set(job.id,task);setImmediate(next);}else active=task;
   }
   let billingBusy=false,balanceBusy=false;
   async function syncCosts(job){
@@ -115,9 +119,16 @@ export function createVideos({data,executable,getSource,validProject=value=>valu
     const events=[...fetched,...(job.billing?.events??[]).filter(e=>ids.includes(e.requestId)&&!reported.has(e.requestId))],matched=new Set(events.map(e=>e.requestId));
     job.billing={currency:'USD',actualCost:events.reduce((sum,e)=>sum+e.costUSD,0),matchedRequests:matched.size,totalRequests:ids.length,complete:ids.length>0&&matched.size===ids.length&&!job.clips.some(c=>c?.submissionUnknown),events,syncedAt:new Date().toISOString()};save();
   }
-  const ensureConnection=provider=>{if(provider==='fal'&&!config.falKey)fail('Save your fal.ai API key in Engine settings first.',409);if(provider==='runpod'&&!(config.podURL&&config.podToken))fail('Connect a MiniMax H3 RunPod video service in Engine settings first.',409);};
+  const ensureConnection=provider=>{if(provider==='fal'&&!config.falKey)fail('Save your fal.ai API key in Engine settings first.',409);if(provider==='runpod'&&!(config.runpodMode==='serverless'?config.endpointId&&getRunpodAccountKey():config.podURL&&config.podToken))fail('Configure MiniMax H3 serverless or a dedicated Pod in RunPod cloud first.',409);};
   return {
     state,
+    async connectServerless({endpointId}){if(!/^[a-zA-Z0-9_-]{1,100}$/.test(endpointId??''))fail('Invalid endpoint ID.');if(db.jobs.some(j=>j.provider==='runpod'&&['queued','running'].includes(j.status)))fail('Wait for the RunPod video queue before switching endpoints.',409);config={...config,endpointId,runpodMode:'serverless'};atomic(keyFile,config);},
+    async connectRunpod({url,token}) {
+      if(db.jobs.some(j=>j.provider==='runpod'&&['queued','running'].includes(j.status)))fail('Wait for the RunPod video queue before changing its service.',409);
+      const next={...config,runpodMode:'pod',podURL:validateVideoPodURL(url),podToken:string(token,'RunPod video token',250)};
+      if(!next.podToken)fail('A video worker token is required.');
+      await providers.checkPod(next);config=next;atomic(keyFile,config);
+    },
     clearProject(id){for(const job of db.jobs)if(job.projectId===id)job.projectId='';save();},
     async handle(req,res,route,{body,send,serveFile}){
       if(route==='/api/videos/billing/balance'&&req.method==='POST'){
@@ -166,19 +177,21 @@ export function createVideos({data,executable,getSource,validProject=value=>valu
         const input=await body(req),next={...config};
         if(input.falBillingKey!==undefined){const key=string(input.falBillingKey,'fal.ai billing key',250);if(key)next.falBillingKey=key;}
         if(input.falKey!==undefined){const key=string(input.falKey,'fal.ai key',250);if(key)next.falKey=key;}
+        if(input.runpodMode!==undefined){if(!['serverless','pod'].includes(input.runpodMode))fail('Choose Serverless or Pod.');if(db.jobs.some(j=>j.provider==='runpod'&&['queued','running'].includes(j.status)))fail('Wait for the RunPod video queue before changing its engine.',409);next.runpodMode=input.runpodMode;}
+        if(input.endpointId!==undefined){if(!/^[a-zA-Z0-9_-]{1,100}$/.test(input.endpointId))fail('Enter your compatible H3 endpoint ID.');next.endpointId=input.endpointId;}
         if(input.podURL!==undefined){try{next.podURL=validateVideoPodURL(input.podURL);}catch(error){fail(error.message);}}
         if(input.podToken!==undefined){const token=string(input.podToken,'RunPod video token',250);if(token)next.podToken=token;}
         if(input.falKey!==undefined&&!next.falKey)fail('Enter your fal.ai API key.');
-        if(input.podURL!==undefined&&!next.podToken)fail('Enter the API token configured on your MiniMax H3 video service.');
+        if(input.podURL!==undefined&&next.runpodMode!=='serverless'&&!next.podToken)fail('Enter the API token configured on your MiniMax H3 video service.');
         if(next.falBillingKey!==config.falBillingKey){delete db.accountBilling;save();}
         config=next;atomic(keyFile,config);send(res,200,state().connection);return true;
       }
       if(route==='/api/videos/connection'&&req.method==='DELETE'){
         const input=await body(req);if(!['fal','runpod','billing'].includes(input.provider))fail('Choose a provider.');
-        if(active?.job.provider===input.provider)fail('Finish or cancel the active video before disconnecting.',409);
-        if(input.provider==='billing'){config.falBillingKey='';delete db.accountBilling;save();}else if(input.provider==='fal')config.falKey='';else{config.podURL='';config.podToken='';}atomic(keyFile,config);send(res,200,state().connection);return true;
+        if(active?.job.provider===input.provider||(input.provider==='runpod'&&concurrent.size))fail('Finish or cancel the active video before disconnecting.',409);
+        if(input.provider==='billing'){config.falBillingKey='';delete db.accountBilling;save();}else if(input.provider==='fal')config.falKey='';else{config.podURL='';config.podToken='';config.endpointId='';}atomic(keyFile,config);send(res,200,state().connection);return true;
       }
-      if(route==='/api/videos/check-pod'&&req.method==='POST'){ensureConnection('runpod');await providers.checkPod(config);send(res,200,{ready:true});return true;}
+      if(route==='/api/videos/check-pod'&&req.method==='POST'){ensureConnection('runpod');if(config.runpodMode==='serverless')await providers.checkServerless({...config,serverlessKey:getRunpodAccountKey()});else await providers.checkPod(config);send(res,200,{ready:true});return true;}
       if(route==='/api/videos/draft'&&req.method==='PUT'){
         const input=await body(req);if(JSON.stringify(input).length>24000)fail('Video draft is too large.');db.draft=input;save();send(res,200,{saved:true});return true;
       }
@@ -188,8 +201,8 @@ export function createVideos({data,executable,getSource,validProject=value=>valu
         send(res,200,{...result,pricing,pricingError});return true;
       }
       if(route==='/api/videos'&&req.method==='POST'){
-        const input=await body(req);ensureConnection(input.provider);if(db.jobs.some(j=>['queued','running'].includes(j.status)))fail('Finish or cancel the current video before starting another.',409);
-        const planned=await plan(input);getSource(planned.songId,planned.masterId);const job={...planned,id:randomUUID(),clips:[],status:'queued',stage:'Queued',createdAt:new Date().toISOString()};
+        const input=await body(req);ensureConnection(input.provider);const ongoing=db.jobs.filter(j=>['queued','running'].includes(j.status));if(ongoing.length&&(input.provider!=='runpod'||config.runpodMode!=='serverless'||ongoing.length>=2||ongoing.some(j=>j.provider!=='runpod'||j.runpodMode!=='serverless')))fail('Finish or cancel the current video before starting another; serverless supports two concurrent videos.',409);
+        const planned=await plan(input);getSource(planned.songId,planned.masterId);const job={...planned,...(planned.provider==='runpod'?{runpodMode:config.runpodMode,endpointId:config.endpointId??''}:{}),id:randomUUID(),clips:[],status:'queued',stage:'Queued',createdAt:new Date().toISOString()};
         mkdirSync(jobDir(job.id));db.jobs.push(job);db.draft=input;save();setImmediate(next);send(res,202,view(job));return true;
       }
       const match=/^\/api\/videos\/([a-f0-9-]{36})\/(video|thumbnail|cancel|resume|trash|restore|project)$/.exec(route);
@@ -219,16 +232,16 @@ export function createVideos({data,executable,getSource,validProject=value=>valu
         if(match[2]==='cancel'&&req.method==='POST'){
           if(!['running','queued'].includes(job.status))fail('This video is no longer generating.',409);
           job.status='cancelled';job.stage='Cancelled';save();
-          if(active?.job.id===job.id){active.controller.abort(new Error('Video cancelled'));for(const clip of job.clips)if(clip?.remote&&!clip.completed)await providers.cancel(active.config,job.provider,clip.remote).catch(()=>{});}
+          const task=concurrent.get(job.id)??(active?.job.id===job.id?active:null);if(task){task.controller.abort(new Error('Video cancelled'));for(const clip of job.clips)if(clip?.remote&&!clip.completed)await providers.cancel(task.config,job.provider,clip.remote).catch(()=>{});}
           send(res,200,view(job));return true;
         }
         if(match[2]==='resume'&&req.method==='POST'){
           if(!['interrupted','failed','cancelled'].includes(job.status)||job.clips.some(c=>c?.submissionUnknown))fail('This video cannot be resumed. Check the provider request history.',409);
-          if(active||db.jobs.some(j=>j.status==='queued'))fail('Wait for the current video to finish.',409);
-          ensureConnection(job.provider);job.status='queued';job.stage='Queued to resume';delete job.error;save();setImmediate(next);send(res,202,view(job));return true;
+          if(active||concurrent.size||db.jobs.some(j=>j.status==='queued'))fail('Wait for the current video to finish.',409);
+          ensureConnection(job.provider);if(job.provider==='runpod'&&job.runpodMode==='serverless'&&(config.runpodMode!=='serverless'||job.endpointId!==config.endpointId))fail('Reconnect this video’s original serverless endpoint before resuming.',409);job.status='queued';job.stage='Queued to resume';delete job.error;save();setImmediate(next);send(res,202,view(job));return true;
         }
       }return false;
     },
-    async close(){closing=true;if(active){active.controller.abort(new Error('App shutting down'));await active.running;}},
+    async close(){closing=true;const tasks=[...concurrent.values(),...(active?[active]:[])];for(const task of tasks)task.controller.abort(new Error('App shutting down'));await Promise.all(tasks.map(task=>task.running));},
   };
 }

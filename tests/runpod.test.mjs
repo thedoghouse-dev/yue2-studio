@@ -61,3 +61,45 @@ test('actual Python worker: authorization, lyrics/score, async generation, downl
  assert.equal((await request('/api/runpod/check','POST',{})).status,400);
  assert.ok(!readFileSync(path.join(temp,'app','data','runpod-connection.json'),'utf8').includes(secret));
 });
+
+
+test('installer preserves and recovers stale checkout locks, but refuses fresh ones',{skip:!existsSync(python)},async()=>{
+ const code=`
+import sys,tempfile,time,os
+from pathlib import Path
+sys.path.insert(0,str(Path('cloud').resolve()))
+from setup_worker import recover_checkout_lock
+with tempfile.TemporaryDirectory() as tmp:
+ source=Path(tmp); git=source/'.git';git.mkdir();lock=git/'index.lock';lock.write_text('abandoned')
+ try:recover_checkout_lock(source,lambda _:None)
+ except RuntimeError:pass
+ else:raise AssertionError('Fresh lock was removed')
+ assert lock.read_text()=='abandoned'
+ os.utime(lock,(time.time()-600,time.time()-600))
+ recover_checkout_lock(source,lambda _:None)
+ assert not lock.exists()
+ recovered=list(git.glob('index.lock.interrupted-*'))
+ assert len(recovered)==1 and recovered[0].read_text()=='abandoned'
+ recover_checkout_lock(source,lambda _:None)
+ from unittest.mock import patch
+ from subprocess import CompletedProcess
+ from setup_worker import checkout_source
+ source=Path(tmp)/'source';source.mkdir();(source/'preserved.txt').write_text('original')
+ calls=[]
+ def run(cmd,**kwargs):
+  calls.append(cmd)
+  if cmd[1]=='clone':
+   Path(cmd[-1]).mkdir()
+   return CompletedProcess(cmd,0)
+  return CompletedProcess(cmd,1 if len(calls)==1 else 0,'','error: untracked working tree files would be overwritten' if len(calls)==1 else '')
+ with patch('setup_worker.subprocess.run',side_effect=run):
+  checkout_source(source,lambda _:None)
+ assert source.is_dir()
+ archived=list(Path(tmp).glob('source.interrupted-*'))
+ assert len(archived)==1 and (archived[0]/'preserved.txt').read_text()=='original'
+ assert len(calls)==3
+`;
+ const {spawnSync}=await import('node:child_process');
+ const result=spawnSync(python,['-c',code],{cwd:root,encoding:'utf8',windowsHide:true});
+ assert.equal(result.status,0,result.stderr);
+});

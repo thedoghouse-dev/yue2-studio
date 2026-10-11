@@ -2,6 +2,9 @@
 
 A local song creation app for Windows. Write lyrics, describe the sound, and generate music on your own GPU using YuE2 through audio.cpp. Use SheetSage2 to transcribe recordings into printable sheet music. No subscription required.
 
+
+The main workflow is local GPU music and fal.ai videos with your chosen model. The **Advice** page explains getting started, references, and organizing related assets. **RunPod** is an optional **advanced, experimental** section at the bottom of navigation: end-to-end cloud generation has not yet been verified, GPU availability can block jobs, and compute and storage can incur ongoing charges. Read the linked RunPod documentation and pricing before using it.
+
 ## Open the app
 
 Double-click **Start YuE2 Studio.cmd** to start the server and open the app in your browser. If the server is already running, the launcher opens the existing app. Both setup scripts also open the app automatically after a successful installation. Keep the server window running while using the app. Alternatively, run `npm start` in this folder and open http://127.0.0.1:3210.
@@ -41,7 +44,7 @@ Choose **Where should YuE2 run?** in the song editor. Local generation uses the 
 
 RunPod uses higher precision for the same YuE2 model, rather than a separate larger model architecture. It may improve quality relative to Q4, but there is no guarantee that it fixes incorrect lyrics. Compare the same lyrics, style, score and seed, and review lyric phrasing against the selected melody.
 
-See [cloud/README.md](cloud/README.md) for the worker and deployment instructions. In **Engine settings**, save the worker's HTTPS proxy URL and worker token, then click **Check worker**. The worker token is separate from your RunPod account API key. The app never starts or bills a pod automatically. RunPod charges for a running pod, including idle time and setup downloads; stop or terminate it when finished. Lyrics, style and ABC are sent to your pod when you select RunPod. SheetSage2 stays local. Cloud connection secrets are kept out of browser state and song exports.
+Open **RunPod cloud** in the sidebar for guided setup. Save your account API key, select a 24 GB+ NVIDIA GPU, choose an existing network volume, a new volume, or Pod storage, then **Review launch & costs**. Confirm the paid plan to launch a pinned YuE2 worker. The app supplies its worker token, installs the runtime and verified model weights, checks readiness, and connects the worker to song generation. Your account key is used with RunPod's REST v2 control plane and serverless queue API and is never forwarded to an inference worker or returned to the browser. No GPU is rented until you explicitly approve a plan. See [cloud/README.md](cloud/README.md) for details. The advanced manual URL/token form remains under Engine settings. RunPod charges for a running pod, including idle time and setup downloads; stop or terminate it when finished. Lyrics, style and ABC are sent to your pod when you select RunPod. SheetSage2 stays local. Cloud connection secrets are kept out of browser state and song exports.
 
 ## Hardware and length
 
@@ -114,7 +117,7 @@ Scenes are generated sequentially, downloaded, normalized, joined, and exported 
 
 #### RunPod video service: MiniMax H3 Base
 
-The RunPod picker uses **MiniMax H3 Base FL2VA**, whose weights are published under the MiniMax H3 community license. This is distinct from hosted H3 Max variants and from the YuE2 audio worker. No pod is provisioned by the app. Configure a compatible GPU pod following the official [MiniMax deployment guide](https://huggingface.co/MiniMaxAI/MiniMax-H3#local-deployment-of-h3-base) and [SGLang diffusion documentation](https://docs.sglang.io/). Hardware requirements are substantial; the official example uses four GPUs. Verify current SGLang installation instructions and hardware recommendations before renting a pod.
+The RunPod picker uses **MiniMax H3 Base FL2VA**, whose weights are published under the MiniMax H3 community license. This is distinct from hosted H3 Max variants and from the YuE2 audio worker. The guided setup can prepare both models on one volume and configure on-demand H3 video workers. Configure a compatible GPU pod following the official [MiniMax deployment guide](https://huggingface.co/MiniMaxAI/MiniMax-H3#local-deployment-of-h3-base) and [SGLang diffusion documentation](https://docs.sglang.io/). Hardware requirements are substantial; the official example uses four GPUs. Verify current SGLang installation instructions and hardware recommendations before renting a pod.
 
 The service must expose the SGLang OpenAI-compatible `/v1/models`, `POST /v1/videos`, `GET /v1/videos/{id}`, and `GET /v1/videos/{id}/content` routes with API-key authentication. The app uses the official `task: t2va`, `conditions: []`, and `target` request format, at a 768-pixel short edge.
 
@@ -138,3 +141,84 @@ In Music videos, upload PNG, JPEG, or WebP photos (up to 5 MB each), give each a
 - Existing text-only models, including the current RunPod integration, keep reference selection disabled. Switch to an image-capable fal.ai endpoint to use photos.
 
 Labels can be renamed, and images can be archived from the picker. Archived image files remain available for saved jobs to resume; queued jobs retain the original label mapping. Reference conditioning guides likeness but does not guarantee exact identity or consistency.
+
+### Sheet music library
+
+Open **Sheet music library** to browse saved transcriptions with notation previews, search by title or audio filename, and filter by status. **Open score** displays the full notation with downloads and printing. **Create a song** loads its score into YuE2. Choose **New sheet music** to upload an audio file or hum into your microphone.
+
+The **Lyrics library** keeps saved writing conversations and editable lyric drafts together. Search the collection or filter Drafts / Used in a song, then edit or create a song. Selecting **Use in song** or **Create a song** preserves the draft ID in the song request; score sources are preserved too. Older songs can connect by exact matching lyrics or supplied ABC content (shown as a content match, not recorded provenance). Completed songs in Trash still count as uses.
+
+Choose **Related assets** on lyrics, songs, videos, or sheet music to open a navigable connection chart. It shows source lyrics, supplied sheet music, songs and video soundtracks, including related items in Trash. Connections describe shared sources; they do not imply that changes to a draft update an existing recording.
+
+### RunPod cloud management
+
+Use **Refresh resources** to list your Pods, network volumes, and serverless endpoints. GPU prices and capacity come from RunPod's v2 catalog. Network-volume placement pins the GPU to that volume's data center. Review shows the GPU list rate, storage choice and charges, and model-startup billing; quotes expire after ten minutes and higher GPU quotes require a new review. **Start GPU** has its own price confirmation; **Stop GPU** preserves storage. The app blocks stopping a connected Pod while a RunPod song or video is active or queued. Finished songs remain local.
+
+A first boot can take several minutes to compile the pinned CUDA runtime and download roughly 8 GB of model weights. CUDA binaries are cached by GPU architecture; model files stay on your selected storage. A lost create acknowledgement is recorded as uncertain and reconciled against a unique deployment marker on refresh. It never automatically repeats a rental. Newly created storage may remain billed if a Pod launch fails. No automatic stop or termination is scheduled: stop compute after use, and manage storage/termination in the RunPod console. Removing the account key only removes account-management access.
+
+RunPod setup shares one account and network volume between YuE2 and MiniMax. Select **YuE2 + MiniMax H3 · songs & videos** to also cache the pinned H3 Base FL2VA checkpoint (~144 GB). Combined storage requires at least 200 GB; 300 GB is recommended. This starts the song engine only, not a video service.
+
+For video generation, select **MiniMax H3 · serverless videos**, reuse the prepared volume, and review the endpoint configuration. The endpoint defaults to **0 idle workers and a maximum of 10**. Workers start only for generation requests. Each worker requires four H200 GPUs; startup and active worker time are billed, and availability is not guaranteed. The app can queue two videos with up to five scene requests each. A dedicated H3 Pod remains optional. YuE2 songs default to a separate serverless endpoint on the same volume; authenticated song Pods remain optional.
+
+The new H3 setup/serverless paths have automated contract tests but have not been validated on live GPUs. Labeled image references remain supported through fal.ai; RunPod image generation is not implemented. No Codex skill or MCP connection is required to use the app's RunPod setup.
+
+See [CHANGELOG.md](CHANGELOG.md) for changes.
+
+Engine settings are grouped by provider: Lyrics AI through OpenRouter (Claude/OpenAI), fal.ai generation and billing, RunPod song/video compute, and local engines. RunPod image generation is not yet available.
+
+
+### YuE2 serverless songs
+
+RunPod cloud now defaults to **YuE2 · serverless songs**. Save your account key,
+choose an existing network volume or create one (50 GB is a practical song-only
+starting size), select a GPU, and review the costs. Setup creates an endpoint
+with zero idle workers and a default maximum of ten; it starts no GPU or Pod.
+The app selects that song engine automatically. Dedicated song Pods remain an
+optional choice, and existing Pod connections continue to work.
+
+The first song prepares any missing pinned CUDA CLI and BF16/F32 model files on
+the shared volume. Initialization is billed and may take several minutes.
+The same cache is reused by later workers; different GPU architectures have
+separate builds. MiniMax endpoints may use this same volume, but keep separate
+workers because their GPU/runtime requirements differ. MiniMax preparation
+remains a separate step; do not use a song endpoint as a video endpoint.
+
+Completed recordings are stored on the network volume and automatically fetched
+in 4 MiB chunks, verified with SHA-256, and saved as WAV files in the local song
+library. Transfer requests also consume brief worker time. This avoids requiring
+separate S3 credentials and keeps each asynchronous result below RunPod payload
+limits. Remote cached recordings remain on the volume; deleting a local song
+does not remove its remote cached file. Network storage continues to be billed.
+Cancelling a song requests cancellation of its active RunPod job. Ambiguous paid
+submissions are never automatically repeated. The local composition queue still
+processes one song at a time; ten workers is an endpoint cap, not a promise of
+parallel song generation from this app or reserved GPU capacity.
+
+### Automatic GPU selection and Studio resources
+
+The GPU dropdown defaults to **Automatic · scan compatible GPUs**. Review scans
+live catalog capacity in your volume's data center, checks model memory and GPU
+requirements, and excludes known GPU types over your quoted hourly selection
+limit. Serverless uses the compatible GPU pools; a Pod chooses one suitable GPU.
+Deployment checks the reviewed candidates again and requires a new review if none
+remain available. Capacity is not reserved and failed rentals are not retried
+automatically. This selection limit is not a permanent billing cap: RunPod may
+change pricing or add GPU types to a pool. Idle serverless workers default to zero.
+
+Resources created by this Studio, and their attached volumes, appear by default.
+Use **Show all account resources** to link another resource to this Studio and
+save a local label and notes. Labels do not rename resources in RunPod. These
+associations are kept in ignored local data, not shared through GitHub.
+
+Network volume cards show allocated-storage estimates per month, day (30-day
+projection), and year using published list rates verified October 9, 2026.
+These are projections, not invoiced charges; GPU costs and account discounts
+are separate. Unknown tiers show no estimate. Cards list attached account Pods
+and endpoints even when those resources are hidden by the Studio filter.
+
+Last recorded Studio activity persists locally for model setup and song/video
+generation requests, including failed attempts. It is not a filesystem access
+log: old untracked generations and activity outside this Studio are unknown.
+Refreshing or selecting an endpoint does not count as using storage. Use the
+RunPod storage link to review deletion; models can be downloaded again, but
+remote-only files require a backup and rebuilding consumes time/compute.
