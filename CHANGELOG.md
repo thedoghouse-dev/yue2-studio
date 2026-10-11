@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Advice shows live local engine file readiness, installation progress and failures, with first-time setup/repair instructions and repository links.
 - Advice page explains local GPU music, fal.ai video models, libraries and projects, with RunPod documentation and billing guidance.
 - RunPod appears last in navigation under Advanced / Experimental, with an explicit notice that end-to-end generation is not yet verified. Local engines precede RunPod in settings.
 - Sports arena sound preset for instrumental entrance music with brass fanfares, powerful percussion, stadium claps and a dramatic build.

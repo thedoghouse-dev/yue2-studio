@@ -172,6 +172,11 @@ function actions(song) {
   if(song.deletedAt)return `<div class="song-actions"><button class="secondary" type="button" data-song-restore="${song.id}">Restore song ↗</button></div>`;
   return `<div class="song-actions">${song.hasAudio ? `<button class="secondary" type="button" data-video-song="${song.id}">Create music video</button><button class="secondary" type="button" data-master="${song.id}">Master this song</button><a class="secondary" href="${link(song, 'audio')}?download">Download WAV ↓</a>` : ''}${['running', 'queued'].includes(song.status) ? `<button class="secondary" type="button" data-cancel="${song.id}">Cancel</button>` : ''}<button class="secondary related-button" type="button" data-related="song:${song.id}" aria-label="Related assets for ${escape(song.title)}">&#8984; Related assets</button><button class="secondary" type="button" data-detail="${song.id}">Details ↗</button><button class="text-button video-delete-button" type="button" data-song-delete="${song.id}">${song.deletionBlockers?.length?'Why deletion is blocked':'Delete song'}</button></div>`;
 }
+function setupTextForAdvice(setup) {
+  if (setup.status === 'extracting') return `Unpacking ${setup.file || 'the runtime'}. Keep the setup window open.`;
+  const progress = setup.total > 0 ? ` · ${Math.min(100, Math.floor((setup.bytes || 0) / setup.total * 100))}%` : '';
+  return `Downloading ${setup.file || 'runtime and model files'}${progress}. Keep the setup window open.`;
+}
 function renderEngine() {
   const ready = studio.runtime.ready;
   const remote=$('execution').value==='runpod',generationReady=remote?studio.runpod?.configured:ready;
@@ -179,6 +184,11 @@ function renderEngine() {
   $('engine-pill').className = `engine-pill ${generationReady ? 'ready' : ''}`;
   $('engine-pill').innerHTML = `<i></i>${remote ? (generationReady?'RunPod connection saved':'RunPod setup required') : (ready?'YuE2 engine ready':'Engine setup required')}`;
   const setup = studio.setup;
+  const installing = ['downloading', 'extracting'].includes(setup?.status);
+  const adviceStatus = ready ? 'Runtime and models installed' : installing ? 'Installation in progress' : setup?.status === 'failed' ? 'Installation needs attention' : 'Not installed or configured files are missing';
+  let adviceDetail = ready ? 'This computer has the configured YuE2 runtime and required model files. You can create a song with the Local engine.' : installing ? setupTextForAdvice(setup) : setup?.status === 'failed' ? `Setup failed: ${setup.error || 'The installer could not finish.'} Open the instructions below to retry.` : 'Open the setup instructions below, or check Local engines in Engine settings if you already installed the files elsewhere.';
+  $('advice-local-status').innerHTML = `<span class="status-badge ${!ready && !installing ? 'failed' : installing ? 'running' : ''}">${escape(adviceStatus)}</span><p class="field-help">${escape(adviceDetail)}</p>`;
+
   $('setup-banner').hidden = ready || remote;
   let setupText = 'The generation engine needs setup. Run “Setup YuE2.cmd” from the project folder to install it.';
   if (setup?.status === 'downloading') setupText = `Installing YuE2 · ${setup.file} · ${Math.floor(setup.bytes / setup.total * 100)}% downloaded. You can write your lyrics while it installs.`;

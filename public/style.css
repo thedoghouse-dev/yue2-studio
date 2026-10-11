@@ -164,3 +164,5 @@ body{background:radial-gradient(ellipse at 88% 0%,#34205850,transparent 45%),rad
 .advanced-nav-label{margin-top:18px;margin-bottom:8px;font-size:8px;letter-spacing:1px}
 .advice-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.advice-grid h3,.runpod-intro h3{font-size:20px;line-height:1.4}.advice-grid .field-help,.runpod-intro .field-help{font-size:12px;line-height:1.85}.advice-grid .song-actions{justify-content:flex-start;flex-wrap:wrap}.advice-links{display:flex;flex-wrap:wrap;gap:12px 20px;margin-top:18px}.advice-links a{color:var(--orange);font-size:12px}.runpod-intro{margin-bottom:24px}
 @media(max-width:900px){.advice-grid{grid-template-columns:1fr}}
+
+#advice-local-status{margin:18px 0}#advice-local-setup{margin:16px 0}#advice-local-setup summary{font-size:12px}#advice-local-setup ol{padding-left:20px;font-size:12px;line-height:1.85}
